@@ -1,0 +1,52 @@
+// Admin service: RBAC, audit queries, health; DOM-drift alert routing.
+syntax = "proto3";
+
+package waec.admin.v1;
+
+service AdminService {
+  // Health/readiness probe.
+  rpc Health(HealthRequest) returns (HealthResponse);
+  // Query transaction audit log (no grades — metadata only).
+  rpc QueryAuditLog(QueryAuditLogRequest) returns (QueryAuditLogResponse);
+  // Report DOM-drift events consumed by alerting.
+  rpc ReportDomDrift(ReportDomDriftRequest) returns (ReportDomDriftResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ready = 1;
+  string version = 2;
+}
+
+message QueryAuditLogRequest {
+  // Admin RBAC token; non-admin → 403.
+  string admin_token = 1;
+  string index_number = 2; // optional filter
+  int64 from_unix = 3;
+  int64 to_unix = 4;
+  int32 limit = 5;
+}
+
+message AuditEntry {
+  string transaction_id = 1;
+  string index_number = 2;
+  string exam_type = 3;
+  string outcome = 4; // success | failed | grace_refetch
+  int64 occurred_unix = 5;
+}
+
+message QueryAuditLogResponse {
+  repeated AuditEntry entries = 1;
+}
+
+message ReportDomDriftRequest {
+  string portal_host = 1;
+  string exam_type = 2;
+  string schema_version_expected = 3;
+  string observed_signature = 4; // DOM fingerprint, no candidate data
+}
+
+message ReportDomDriftResponse {
+  bool alert_fired = 1;
+}

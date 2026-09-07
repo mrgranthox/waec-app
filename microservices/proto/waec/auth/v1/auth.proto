@@ -1,0 +1,45 @@
+// Auth service: registration, login, token lifecycle.
+syntax = "proto3";
+
+package waec.auth.v1;
+
+service AuthService {
+  // Register a new candidate account (10-digit index number).
+  rpc Register(RegisterRequest) returns (AuthResponse);
+  // Login with index + password; returns short-lived access token.
+  rpc Login(LoginRequest) returns (AuthResponse);
+  // Exchange a valid refresh token for a new token pair (rotation).
+  rpc Refresh(RefreshRequest) returns (AuthResponse);
+  // Bind a biometric platform key to the account.
+  rpc BindBiometric(BindBiometricRequest) returns (BindBiometricResponse);
+}
+
+message RegisterRequest {
+  string index_number = 1; // exactly 10 digits
+  string password = 2;
+}
+
+message LoginRequest {
+  string index_number = 1;
+  string password = 2;
+}
+
+message RefreshRequest {
+  string refresh_token = 1;
+}
+
+message BindBiometricRequest {
+  string access_token = 1;
+  string platform_public_key = 2; // platform keystore public key
+}
+
+message BindBiometricResponse {
+  bool bound = 1;
+}
+
+message AuthResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 access_expires_at_unix = 3;
+  string user_id = 4;
+}

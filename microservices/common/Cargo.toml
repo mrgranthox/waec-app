@@ -1,0 +1,32 @@
+[package]
+name = "waec-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = "0.13"
+protox = "0.7"
+
+[dependencies]
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+jsonwebtoken = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[dev-dependencies]
+hex-literal = "0.4"

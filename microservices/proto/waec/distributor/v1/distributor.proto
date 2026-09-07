@@ -1,0 +1,25 @@
+// Distributor service: JIT voucher acquisition via Ghanaian vendors.
+syntax = "proto3";
+
+import "waec/common/v1/common.proto";
+
+package waec.distributor.v1;
+
+service DistributorService {
+  // Acquire a single-use WAEC PIN just-in-time.
+  rpc AcquirePin(AcquirePinRequest) returns (AcquirePinResponse);
+}
+
+message AcquirePinRequest {
+  // Ties the voucher to a paid transaction for audit + grace re-issue.
+  string transaction_id = 1;
+  waec.common.v1.ExamType exam_type = 2;
+}
+
+message AcquirePinResponse {
+  string pin = 1;          // never logged
+  string serial = 2;       // never logged
+  string vendor = 3;       // which vendor supplied it
+  // Whether this PIN came from the failover vendor.
+  bool failover_used = 4;
+}

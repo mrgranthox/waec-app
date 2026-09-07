@@ -1,0 +1,52 @@
+// Common types shared across WAEC platform gRPC contracts.
+syntax = "proto3";
+
+package waec.common.v1;
+
+// Exam types supported at launch (Ghana only).
+enum ExamType {
+  EXAM_TYPE_UNSPECIFIED = 0;
+  EXAM_TYPE_BECE = 1;
+  EXAM_TYPE_WASSCE_SCHOOL = 2;
+  EXAM_TYPE_WASSCE_PRIVATE = 3;
+}
+
+// Mobile-money / card channels supported by Paystack Ghana.
+enum PaymentChannel {
+  PAYMENT_CHANNEL_UNSPECIFIED = 0;
+  PAYMENT_CHANNEL_MTN_MOMO = 1;
+  PAYMENT_CHANNEL_TELECEL_CASH = 2;
+  PAYMENT_CHANNEL_AT_MONEY = 3;
+  PAYMENT_CHANNEL_CARD = 4;
+}
+
+// Lifecycle stages streamed to the client during retrieval.
+enum TransactionStage {
+  TRANSACTION_STAGE_UNSPECIFIED = 0;
+  TRANSACTION_STAGE_PAYMENT_CONFIRMATION = 1;
+  TRANSACTION_STAGE_VOUCHER_PROVISIONING = 2;
+  TRANSACTION_STAGE_WAEC_RETRIEVAL = 3;
+  TRANSACTION_STAGE_COMPLETE = 4;
+  TRANSACTION_STAGE_FAILED = 5;
+}
+
+// A candidate's single subject result.
+message SubjectGrade {
+  string subject = 1;
+  string grade = 2;
+}
+
+// Structured result payload. NEVER persisted server-side.
+message ResultPayload {
+  string index_number = 1;
+  waec.common.v1.ExamType exam_type = 2;
+  string exam_year = 3;
+  string candidate_name = 4;
+  repeated SubjectGrade grades = 5;
+  // Aggregate symbols, e.g. "A1C6B2..." raw aggregate string if provided.
+  string aggregate = 6;
+}
+
+// Standard gRPC error detail appended to Status.details:
+//   "<error_code>|<human message>"
+// Error codes are defined in the platform error taxonomy.

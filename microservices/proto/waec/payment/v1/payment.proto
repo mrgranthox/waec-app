@@ -1,0 +1,51 @@
+// Payment service: Paystack Ghana charge lifecycle.
+syntax = "proto3";
+
+import "waec/common/v1/common.proto";
+
+package waec.payment.v1;
+
+service PaymentService {
+  // Initialize a charge for a verification request.
+  rpc InitCharge(InitChargeRequest) returns (InitChargeResponse);
+  // Current dynamic GHS pricing per exam type (backend-config driven).
+  rpc GetPricing(GetPricingRequest) returns (GetPricingResponse);
+}
+
+message InitChargeRequest {
+  // Client-generated UUIDv4; duplicates return the original outcome.
+  string idempotency_key = 1;
+  string index_number = 2;
+  waec.common.v1.ExamType exam_type = 3;
+  string exam_year = 4;
+  waec.common.v1.PaymentChannel channel = 5;
+  // Paystack customer phone for MoMo channels.
+  string phone = 6;
+}
+
+message InitChargeResponse {
+  string transaction_id = 1;
+  PaymentStatus status = 2;
+  int64 amount_pesewas = 3; // GHS in pesewas
+  // Paystack checkout/redirect URL for card; display prompt info for MoMo.
+  string checkout_url = 4;
+  string display_message = 5;
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_STATUS_PENDING = 1;
+  PAYMENT_STATUS_SUCCESS = 2;
+  PAYMENT_STATUS_FAILED = 3;
+  PAYMENT_STATUS_REVERSED = 4;
+}
+
+message GetPricingRequest {
+  waec.common.v1.ExamType exam_type = 1;
+}
+
+message GetPricingResponse {
+  int64 amount_pesewas = 1;
+  string currency = 2; // always "GHS"
+  int64 effective_from_unix = 3;
+}

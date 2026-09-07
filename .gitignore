@@ -1,0 +1,32 @@
+# Build artifacts
+target/
+**/target/
+build/
+.dart_tool/
+.flutter-plugins*
+*.lock
+!mobile/pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit (plan §0.8)
+.env
+*.pem
+!microservices/common/tests/fixtures/*.pem
+*.key
+secrets/
+
+# Flutter
+.packages
+.pub-cache/
+.pub/
+
+# Logs
+*.log

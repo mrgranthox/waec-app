@@ -1,0 +1,20 @@
+// Handler service: WAEC portal ingestion + parsing.
+syntax = "proto3";
+
+import "waec/common/v1/common.proto";
+
+package waec.handler.v1;
+
+service HandlerService {
+  // Fetch and parse a candidate result. Response streams nothing to disk.
+  rpc FetchResult(FetchResultRequest) returns (waec.common.v1.ResultPayload);
+}
+
+message FetchResultRequest {
+  string transaction_id = 1;
+  string index_number = 2;
+  waec.common.v1.ExamType exam_type = 3;
+  string exam_year = 4;
+  string voucher_pin = 5;    // consumed upstream; never logged
+  string voucher_serial = 6;
+}

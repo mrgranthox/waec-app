@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust — fmt, clippy, tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: microservices
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: microservices
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --workspace
+      - name: Security audit (SBOM gate)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  flutter:
+    name: Flutter — analyze, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Pub get
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze --fatal-infos
+      - name: Tests
+        run: flutter test
+
+  proto:
+    name: Protobuf — lint & breaking check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: microservices
