@@ -1,0 +1,31 @@
+# Prometheus scrape config — golden signals per service (plan §1.6).
+# Memory-capped at 512 MB / 15d retention on the CPX22.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+  external_labels:
+    deployment: waec
+
+scrape_configs:
+  - job_name: waec-services
+    static_configs:
+      - targets:
+          - auth:50051
+          - payment:50052
+          - distributor:50053
+          - handler:50054
+          - admin:50055
+    metrics_path: /metrics
+
+  - job_name: node
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: docker
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

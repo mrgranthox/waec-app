@@ -1,0 +1,245 @@
+# WAEC platform — full stack runtime of record.
+# Base file shared by dev and prod; use overrides:
+#   dev:  docker compose -f compose.yaml -f compose.dev.yaml up -d
+#   prod: docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Every container carries mem_limit/cpus per the 8 GB node budget
+# (plans/hetzner-infrastructure-plan.md §4). Networks: edge / internal / data —
+# data stores are never on the edge network.
+
+name: waec
+
+x-rust-service: &rust-service
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks: [internal, data]
+  environment: &rust-env
+    RUST_LOG: info
+    DATABASE_URL: postgres://waec:${POSTGRES_PASSWORD}@postgres:5432/waec
+    REDIS_URL: redis://redis:6379
+
+services:
+  # ── Edge ────────────────────────────────────────────────────────────────
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../gateway/conf.d:/etc/nginx/conf.d:ro
+      - certbot-etc:/etc/letsencrypt:ro
+    depends_on:
+      - auth
+      - payment
+    networks: [edge]
+    mem_limit: 64m
+    cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  # ── Data tier (never edge-facing) ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: waec
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env — SOPS-managed}
+      POSTGRES_DB: waec
+    command: >
+      postgres -c shared_buffers=1GB -c max_connections=200
+               -c effective_cache_size=3GB -c wal_level=replica
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [data]
+    mem_limit: 1536m
+    cpus: "1.5"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waec -d waec"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 200mb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    networks: [data]
+    mem_limit: 256m
+    cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  kafka:
+    image: apache/kafka:3.8.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    networks: [data]
+    mem_limit: 1g
+    cpus: "0.75"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+
+  # ── Rust microservices (150 MB each per budget §4) ─────────────────────
+  auth:
+    <<: *rust-service
+    build: { context: ../../microservices, dockerfile: Dockerfile.service, args: { SERVICE: auth } }
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: auth
+    networks: [internal, data]
+    mem_limit: 150m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  payment:
+    <<: *rust-service
+    build: { context: ../../microservices, dockerfile: Dockerfile.service, args: { SERVICE: payment } }
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: payment
+      PAYSTACK_SECRET: ${PAYSTACK_SECRET:?set in .env}
+      PAYSTACK_WEBHOOK_SECRET: ${PAYSTACK_WEBHOOK_SECRET:?set in .env}
+    networks: [internal, data]
+    mem_limit: 150m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  distributor:
+    <<: *rust-service
+    build: { context: ../../microservices, dockerfile: Dockerfile.service, args: { SERVICE: distributor } }
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: distributor
+      VENDOR_PRIMARY_URL: https://api.sellepins.gh
+      VENDOR_SECONDARY_URL: https://api.ewale.gh
+    networks: [internal, data]
+    mem_limit: 150m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  handler:
+    <<: *rust-service
+    build: { context: ../../microservices, dockerfile: Dockerfile.service, args: { SERVICE: handler } }
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: handler
+      PROXY_POOL_URL: ${PROXY_POOL_URL:-http://proxy-rotator:8081}
+    networks: [internal, data, egress]
+    mem_limit: 150m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  admin:
+    <<: *rust-service
+    build: { context: ../../microservices, dockerfile: Dockerfile.service, args: { SERVICE: admin } }
+    environment:
+      <<: *rust-env
+      SERVICE_NAME: admin
+    networks: [internal, data]
+    mem_limit: 150m
+    cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  # ── Observability (memory-capped per budget §4) ────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    networks: [internal]
+    mem_limit: 512m
+    cpus: "0.5"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafanadata:/var/lib/grafana
+    networks: [internal]
+    mem_limit: 256m
+    cpus: "0.25"
+
+  loki:
+    image: grafana/loki:3.1.1
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - lokidata:/loki
+    networks: [internal]
+    mem_limit: 256m
+    cpus: "0.25"
+
+networks:
+  edge:
+    driver: bridge
+  internal:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true # no internet egress for data stores
+  egress:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  promdata:
+  grafanadata:
+  lokidata:
+  certbot-etc:

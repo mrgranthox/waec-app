@@ -1,0 +1,36 @@
+# Prod overrides: strictness on top of compose.yaml.
+# - No debug ports; data network fully internal (no host publish).
+# - Logging shipped to Loki via Docker daemon (configured on host).
+# - Resource limits already set in base; restart policy already unless-stopped.
+
+services:
+  gateway:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  postgres:
+    # Belt-and-braces: forbid image upgrade accidents via pinned digest note.
+    # Digest pinning happens in the deploy pipeline (pull-by-digest).
+    ports: []
+
+  auth:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+  payment:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+  distributor:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+  handler:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+  admin:
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

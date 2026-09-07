@@ -1,0 +1,107 @@
+#cloud-config
+# Cloud-init for the WAEC CPX22 node (plan §1.1 / §10).
+# Installs: Docker Engine + Compose v2, UFW (second firewall layer),
+# unattended-upgrades, WireGuard (admin-only access).
+# No secrets baked beyond WireGuard key material (already SOPS-managed upstream).
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+  - unattended-upgrades
+  - wireguard
+  - fail2ban
+  - auditd
+
+users:
+  - name: waec
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${wg_admin_public_key}
+
+write_files:
+  # ── WireGuard server config — admin VPN only ──────────────────────────
+  - path: /etc/wireguard/wg0.conf
+    permissions: "0600"
+    content: |
+      [Interface]
+      PrivateKey = ${wg_server_private_key}
+      Address = ${wg_server_ip}/24
+      ListenPort = ${wg_listen_port}
+      # Forward WireGuard clients into the private network for admin SSH.
+      PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+      [Peer]
+      # Admin laptop
+      PublicKey = ${wg_admin_public_key}
+      AllowedIPs = ${wg_admin_ip}/32
+
+  # ── UFW: second firewall layer under the hcloud firewall ──────────────
+  - path: /etc/ufw/ufw-waec.rules
+    permissions: "0644"
+    content: |
+      # Allow in: 80, 443 (edge), 51820/udp (WG), WG-tunnel traffic.
+      # Everything else default-deny. SSH only from WG subnet 10.0.2.0/24.
+      *filter
+      :INPUT DROP [0:0]
+      :FORWARD DROP [0:0]
+      :OUTPUT ACCEPT [0:0]
+      -A INPUT -i lo -j ACCEPT
+      -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      -A INPUT -p tcp --dport 80 -j ACCEPT
+      -A INPUT -p tcp --dport 443 -j ACCEPT
+      -A INPUT -p udp --dport 51820 -j ACCEPT
+      -A INPUT -i wg0 -j ACCEPT
+      COMMIT
+
+  # ── Docker daemon hardening ────────────────────────────────────────────
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" },
+        "no-new-privileges": true,
+        "icc": false
+      }
+
+  # ── Unattended upgrades: security only ────────────────────────────────
+  - path: /etc/apt/apt.conf.d/50waec-unattended
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+runcmd:
+  # Docker Engine (official repo, Compose v2 plugin)
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+
+  # WireGuard up
+  - systemctl enable --now wg-quick@wg0
+
+  # UFW: default-deny + allowlist, SSH restricted to WG tunnel
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw allow 51820/udp
+  - ufw allow in on wg0
+  - ufw --force enable
+
+  # Kernel: enable IP forwarding for WG NAT
+  - sysctl -w net.ipv4.ip_forward=1
+  - echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wg-forward.conf

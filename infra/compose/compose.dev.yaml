@@ -1,0 +1,45 @@
+# Dev override: local parity stack (plan §1.5).
+# Adds mock WAEC portals + proxy rotator mock; relaxes resource limits
+# where laptops differ from the CPX22; exposes debugging ports.
+
+services:
+  # Mock WAEC portal — serves deterministic fixture HTML for both hosts.
+  mock-waec:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../proxy/mock-waec:/usr/share/nginx/html:ro
+    networks: [egress]
+    mem_limit: 32m
+    # Both portal hostnames resolve to the mock inside the egress network.
+
+  # Mock vendor (SellePins/Ewale) with fault-injection query params:
+  #   /acquire?fail=503&times=3  → 3 consecutive 503s (circuit breaker test)
+  #   /acquire?stock=out         → OUT_OF_STOCK
+  mock-vendor:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../proxy/mock-vendor:/usr/share/nginx/html:ro
+    networks: [egress]
+    mem_limit: 32m
+
+  handler:
+    environment:
+      SERVICE_NAME: handler
+      # Dev: mock portals via hostname aliases (see networks.egress aliases)
+      ERESULTS_HOST: mock-waec
+      WAECDIRECT_HOST: mock-waec
+      VENDOR_PRIMARY_URL: http://mock-vendor
+      VENDOR_SECONDARY_URL: http://mock-vendor
+      RUST_LOG: debug
+
+  # Postgres exposed for local psql; Kafka for kcat debugging.
+  postgres:
+    ports: ["5432:5432"]
+  kafka:
+    ports: ["9092:9092"]
+  redis:
+    ports: ["6379:6379"]
+
+networks:
+  egress:
+    driver: bridge
