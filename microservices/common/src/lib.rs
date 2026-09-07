@@ -11,6 +11,8 @@ pub mod telemetry;
 ///
 /// Module tree mirrors the proto package hierarchy so that prost's
 /// `super::` cross-package references resolve correctly.
+/// Warnings are silenced: this is machine-generated code.
+#[allow(clippy::all, clippy::pedantic, dead_code)]
 pub mod pb {
     pub mod waec {
         pub mod common {
@@ -48,7 +50,9 @@ pub mod pb {
 
 // Convenience re-exports for the most-used shared types.
 pub mod pb_aliases {
-    pub use crate::pb::waec::common::v1::{ExamType, PaymentChannel, ResultPayload, TransactionStage};
+    pub use crate::pb::waec::common::v1::{
+        ExamType, PaymentChannel, ResultPayload, TransactionStage,
+    };
 }
 
 pub use errors::{DomainError, DomainResult, ErrorCode};
@@ -101,6 +105,9 @@ mod tests {
     fn exam_portal_mapping() {
         assert_eq!(ExamType::Bece.portal_host(), "eresults.waecgh.org");
         assert_eq!(ExamType::WassceSchool.portal_host(), "eresults.waecgh.org");
-        assert_eq!(ExamType::WasscePrivate.portal_host(), "ghana.waecdirect.org");
+        assert_eq!(
+            ExamType::WasscePrivate.portal_host(),
+            "ghana.waecdirect.org"
+        );
     }
 }

@@ -117,7 +117,6 @@ impl CryptoEngine {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,7 +199,12 @@ mod tests {
     #[test]
     fn truncated_payload_rejected() {
         let e = engine();
-        let payload = EncryptedPayload { bytes: vec![0u8; 10] };
-        assert!(matches!(e.decrypt(&payload), Err(CryptoError::PayloadTooShort)));
+        let payload = EncryptedPayload {
+            bytes: vec![0u8; 10],
+        };
+        assert!(matches!(
+            e.decrypt(&payload),
+            Err(CryptoError::PayloadTooShort)
+        ));
     }
 }

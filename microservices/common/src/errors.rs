@@ -100,7 +100,9 @@ impl DomainError {
     pub fn default_retryable(code: ErrorCode) -> bool {
         matches!(
             code,
-            ErrorCode::WaecPortalUnavailable | ErrorCode::VendorCircuitOpen | ErrorCode::RateLimited
+            ErrorCode::WaecPortalUnavailable
+                | ErrorCode::VendorCircuitOpen
+                | ErrorCode::RateLimited
         )
     }
 
@@ -147,15 +149,30 @@ mod tests {
 
     #[test]
     fn codes_are_stable() {
-        assert_eq!(ErrorCode::InvalidIndexNumber.as_str(), "INVALID_INDEX_NUMBER");
-        assert_eq!(ErrorCode::WaecDomSchemaDrift.as_str(), "WAEC_DOM_SCHEMA_DRIFT");
+        assert_eq!(
+            ErrorCode::InvalidIndexNumber.as_str(),
+            "INVALID_INDEX_NUMBER"
+        );
+        assert_eq!(
+            ErrorCode::WaecDomSchemaDrift.as_str(),
+            "WAEC_DOM_SCHEMA_DRIFT"
+        );
     }
 
     #[test]
     fn grpc_mapping() {
-        assert_eq!(ErrorCode::InvalidIndexNumber.to_grpc_code(), tonic::Code::InvalidArgument);
-        assert_eq!(ErrorCode::AuthLockedOut.to_grpc_code(), tonic::Code::ResourceExhausted);
-        assert_eq!(ErrorCode::VendorCircuitOpen.to_grpc_code(), tonic::Code::Unavailable);
+        assert_eq!(
+            ErrorCode::InvalidIndexNumber.to_grpc_code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            ErrorCode::AuthLockedOut.to_grpc_code(),
+            tonic::Code::ResourceExhausted
+        );
+        assert_eq!(
+            ErrorCode::VendorCircuitOpen.to_grpc_code(),
+            tonic::Code::Unavailable
+        );
     }
 
     #[test]

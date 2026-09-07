@@ -118,7 +118,7 @@ impl KeyStore {
             .iter()
             .find(|(k, _)| *k == kid)
             .map(|(_, dk)| dk)
-            .ok_or_else(|| JwtError::UnknownKid(kid))?;
+            .ok_or(JwtError::UnknownKid(kid))?;
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[ISSUER]);
@@ -151,6 +151,16 @@ pub fn access_claims(sub: &str, now: i64) -> Claims {
 }
 
 /// Build refresh-token claims for a user.
+pub fn refresh_claims(sub: &str, now: i64) -> Claims {
+    Claims {
+        sub: sub.to_string(),
+        kid: String::new(),
+        iss: ISSUER.to_string(),
+        iat: now,
+        exp: now + REFRESH_TOKEN_TTL_SECS,
+        kind: TokenKind::Refresh,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -209,7 +219,11 @@ mod tests {
         let now = chrono::Utc::now().timestamp();
         let mut token = ks.sign(access_claims("user-1", now)).unwrap();
         let mid = token.len() / 2;
-        let replacement = if &token[mid..mid + 1] == "A" { "B" } else { "A" };
+        let replacement = if &token[mid..mid + 1] == "A" {
+            "B"
+        } else {
+            "A"
+        };
         token.replace_range(mid..mid + 1, replacement);
         assert!(ks.verify(&token).is_err());
     }
@@ -234,11 +248,14 @@ mod tests {
         let old_token = ks_old.sign(access_claims("user-1", now)).unwrap();
 
         // Rotate: new key becomes active, old public key retained.
-        let ks_new_base = KeyStore::from_pem("k2", NEW_PRIV.as_bytes(), NEW_PUB.as_bytes()).unwrap();
+        let ks_new_base =
+            KeyStore::from_pem("k2", NEW_PRIV.as_bytes(), NEW_PUB.as_bytes()).unwrap();
         let mut ks_rotated = ks_old.clone();
         ks_rotated.encoding = ks_new_base.encoding.clone();
         ks_rotated.kid = "k2".to_string();
-        ks_rotated.add_verification_key("k1", TEST_PUB.as_bytes()).unwrap();
+        ks_rotated
+            .add_verification_key("k1", TEST_PUB.as_bytes())
+            .unwrap();
 
         // Old token still verifies via retained k1 verification key.
         assert!(ks_rotated.verify(&old_token).is_ok());
@@ -253,16 +270,5 @@ mod tests {
         let ks = keystore();
         let token = "eyJhbGciOiJSUzI1NiIsImtpZCI6Im5vcmVmeiJ9.eyJzdWIiOiJ4In0.sig";
         assert!(ks.verify(token).is_err());
-    }
-}
-
-pub fn refresh_claims(sub: &str, now: i64) -> Claims {
-    Claims {
-        sub: sub.to_string(),
-        kid: String::new(),
-        iss: ISSUER.to_string(),
-        iat: now,
-        exp: now + REFRESH_TOKEN_TTL_SECS,
-        kind: TokenKind::Refresh,
     }
 }

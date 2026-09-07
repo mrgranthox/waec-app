@@ -14,7 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "waec/admin/v1/admin.proto",
     ];
 
-    let file_descriptors = protox::compile(protos.iter().map(|p| proto_root.join(p)), [proto_root.clone()])?;
+    let file_descriptors = protox::compile(
+        protos.iter().map(|p| proto_root.join(p)),
+        [proto_root.clone()],
+    )?;
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
 
