@@ -9,3 +9,14 @@ authors.workspace = true
 [dependencies]
 waec-common = { path = "../common" }
 tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }

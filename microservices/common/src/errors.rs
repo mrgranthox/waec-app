@@ -24,6 +24,7 @@ pub enum ErrorCode {
     AuthTokenExpired,
     AuthTokenInvalid,
     AuthLockedOut,
+    InsufficientRole,
     RateLimited,
     Internal,
 }
@@ -48,6 +49,7 @@ impl ErrorCode {
             ErrorCode::AuthTokenExpired => "AUTH_TOKEN_EXPIRED",
             ErrorCode::AuthTokenInvalid => "AUTH_TOKEN_INVALID",
             ErrorCode::AuthLockedOut => "AUTH_LOCKED_OUT",
+            ErrorCode::InsufficientRole => "INSUFFICIENT_ROLE",
             ErrorCode::RateLimited => "RATE_LIMITED",
             ErrorCode::Internal => "INTERNAL",
         }
@@ -70,6 +72,7 @@ impl ErrorCode {
             | ErrorCode::AuthTokenExpired
             | ErrorCode::AuthTokenInvalid => Code::Unauthenticated,
             ErrorCode::AuthLockedOut | ErrorCode::RateLimited => Code::ResourceExhausted,
+            ErrorCode::InsufficientRole => Code::PermissionDenied,
             ErrorCode::VendorCircuitOpen | ErrorCode::WaecPortalUnavailable => Code::Unavailable,
             ErrorCode::WaecDomSchemaDrift => Code::DataLoss,
             ErrorCode::Internal => Code::Internal,

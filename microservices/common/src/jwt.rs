@@ -46,6 +46,13 @@ pub struct Claims {
     pub iat: i64,
     /// Token kind.
     pub kind: TokenKind,
+    /// RBAC role (plan §2.5). Defaults to candidate for legacy tokens.
+    #[serde(default)]
+    pub role: super::Role,
+    /// Unique token id — guarantees refresh-rotation emits distinct pairs
+    /// even within the same second.
+    #[serde(default)]
+    pub jti: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,28 +145,44 @@ impl KeyStore {
     }
 }
 
+fn claims_with_jti(mut c: Claims) -> Claims {
+    c.jti = uuid::Uuid::new_v4().to_string();
+    c
+}
+
 /// Build access-token claims for a user.
 pub fn access_claims(sub: &str, now: i64) -> Claims {
-    Claims {
+    claims_with_jti(Claims {
         sub: sub.to_string(),
         kid: String::new(),
         iss: ISSUER.to_string(),
         iat: now,
         exp: now + ACCESS_TOKEN_TTL_SECS,
         kind: TokenKind::Access,
-    }
+        role: super::Role::Candidate,
+        jti: String::new(),
+    })
+}
+
+/// Build access-token claims with an explicit role (Admin service).
+pub fn access_claims_with_role(sub: &str, now: i64, role: super::Role) -> Claims {
+    let mut c = access_claims(sub, now);
+    c.role = role;
+    c
 }
 
 /// Build refresh-token claims for a user.
 pub fn refresh_claims(sub: &str, now: i64) -> Claims {
-    Claims {
+    claims_with_jti(Claims {
         sub: sub.to_string(),
         kid: String::new(),
         iss: ISSUER.to_string(),
         iat: now,
         exp: now + REFRESH_TOKEN_TTL_SECS,
         kind: TokenKind::Refresh,
-    }
+        role: super::Role::Candidate,
+        jti: String::new(),
+    })
 }
 
 #[cfg(test)]

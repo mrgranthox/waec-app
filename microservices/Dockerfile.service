@@ -1,0 +1,25 @@
+# Service image: builds one Rust service from the workspace.
+# Build args: SERVICE=<auth|payment|distributor|handler|admin>
+FROM rust:1.82-slim AS builder
+ARG SERVICE
+WORKDIR /src
+# Cache deps: manifest-only copy first.
+COPY Cargo.toml Cargo.lock ./
+COPY common/Cargo.toml common/
+COPY ${SERVICE}/Cargo.toml ${SERVICE}/
+RUN mkdir -p common/src ${SERVICE}/src \
+ && echo "// placeholder" > common/src/lib.rs \
+ && printf 'fn main(){}' > ${SERVICE}/src/main.rs \
+ && cargo build --release -p waec-${SERVICE} || true
+# Real build
+COPY common common
+COPY proto proto
+COPY ${SERVICE} ${SERVICE}
+RUN touch ${SERVICE}/src/lib.rs && cargo build --release -p waec-${SERVICE}
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* \
+ && useradd -r -u 10001 appuser
+COPY --from=builder /src/target/release/${SERVICE} /app/server
+USER appuser
+ENTRYPOINT ["/app/server"]

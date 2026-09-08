@@ -33,8 +33,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Web/HTTP
 axum = { version = "0.7", features = ["http2", "macros"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTML DOM parsing (Handler service)
+scraper = "0.20"
+# Async trait helpers + streams (SSE)
+async-trait = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+# Standard gRPC health protocol
+tonic-health = "0.12"
 # Crypto
 aes-gcm = "0.10"
 argon2 = "0.5"
@@ -42,6 +51,8 @@ jsonwebtoken = "9"
 rand = "0.8"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "rust_decimal", "migrate"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }

@@ -3,9 +3,29 @@
 
 pub mod crypto;
 pub mod errors;
+pub mod idempotency;
 pub mod jwt;
 pub mod password;
 pub mod telemetry;
+pub mod webhook;
+
+/// Role claim values for Admin RBAC (plan §2.5: non-admin → 403).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    #[default]
+    Candidate,
+    Admin,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Candidate => "candidate",
+            Role::Admin => "admin",
+        }
+    }
+}
 
 /// Generated protobuf/gRPC types from `proto/` (single source of truth).
 ///
