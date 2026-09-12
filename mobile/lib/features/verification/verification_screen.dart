@@ -3,120 +3,130 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/design_tokens.dart';
 import '../../core/domain_types.dart';
+import '../../core/ui/waec_ui.dart';
 import 'verification_providers.dart';
 
-/// Unified verification screen — plan §3.3.
+/// Result-verification screen — port of
+/// docs/WAEC Result Verification App/src/screens/HomeScreen.tsx.
 ///
-/// Index (10 digits), exam-type selector (BECE / WASSCE SC / Nwasie),
-/// exam year, MoMo/card channel, CTA with dynamic server-driven price.
-/// CTA disabled until the form is fully valid.
+/// Figma drives the layout (navy session bar, locked index, dropdowns,
+/// payment toggles, navy CTA); all state still comes from the existing
+/// [verificationFormProvider] / [journeyProvider] Riverpod graph.
 class VerificationScreen extends ConsumerWidget {
-  const VerificationScreen({super.key, required this.onJourneyStart});
+  const VerificationScreen({
+    super.key,
+    required this.onJourneyStart,
+    required this.indexNumber,
+  });
 
   final void Function() onJourneyStart;
+  final String indexNumber;
+
+  static const _examYears = ['2026', '2025', '2024', '2023', '2022', '2021'];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final form = ref.watch(verificationFormProvider);
-    final notifier = ref.read(verificationFormProvider.notifier);
     final priceAsync = ref.watch(priceProvider(form.examType));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Verify Results')),
+      backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(WaecSpacing.md),
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Candidate index number',
-                style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: WaecSpacing.xs),
-            TextFormField(
-              initialValue: form.indexNumber,
-              keyboardType: TextInputType.number,
-              maxLength: 10,
-              decoration: const InputDecoration(
-                hintText: 'e.g. 1002330440',
-                counterText: '',
-              ),
-              onChanged: notifier.setIndex,
+            // Top bar: active session + auth pill.
+            WaecNavyHeader(
+              eyebrow: 'Active Session',
+              title: indexNumber,
+              titleIsMono: true,
+              trailing: const WaecAuthPill(),
             ),
-            const SizedBox(height: WaecSpacing.md),
-            Text('Exam type', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: WaecSpacing.xs),
-            SegmentedButton<ExamType>(
-              segments: const [
-                ButtonSegment(
-                    value: ExamType.bece, label: Text('BECE')),
-                ButtonSegment(
-                    value: ExamType.wassceSchool,
-                    label: Text('WASSCE SC')),
-                ButtonSegment(
-                    value: ExamType.wasscePrivate,
-                    label: Text('Nwasie')),
-              ],
-              selected: {form.examType},
-              onSelectionChanged: (s) => notifier.setExam(s.first),
-            ),
-            const SizedBox(height: WaecSpacing.md),
-            Text('Exam year', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: WaecSpacing.xs),
-            TextFormField(
-              initialValue: form.examYear,
-              keyboardType: TextInputType.number,
-              maxLength: 4,
-              decoration: const InputDecoration(hintText: '2025'),
-              onChanged: notifier.setYear,
-            ),
-            const SizedBox(height: WaecSpacing.md),
-            Text('Payment channel',
-                style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: WaecSpacing.xs),
-            Wrap(
-              spacing: WaecSpacing.sm,
-              children: [
-                for (final c in PaymentChannel.values)
-                  ChoiceChip(
-                    label: Text(c.displayName),
-                    selected: form.channel == c,
-                    onSelected: (_) => notifier.setChannel(c),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.only(bottom: WaecSpacing.xl),
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(24, 24, 24, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Verify Results',
+                            style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: WaecColors.navy)),
+                        SizedBox(height: 2),
+                        Text(
+                            'Complete all fields to fetch your official result',
+                            style: TextStyle(
+                                fontSize: 12, color: Color(0xFF94A3B8))),
+                      ],
+                    ),
                   ),
-              ],
-            ),
-            if (form.channel == PaymentChannel.mtnMomo) ...[
-              const SizedBox(height: WaecSpacing.sm),
-              TextFormField(
-                keyboardType: TextInputType.phone,
-                maxLength: 10,
-                decoration: const InputDecoration(
-                  hintText: 'MoMo number (0244000000)',
-                  counterText: '',
-                ),
-                onChanged: notifier.setPhone,
-              ),
-            ],
-            const SizedBox(height: WaecSpacing.xl),
-            // CTA with dynamic server-driven price (plan §3.3).
-            priceAsync.when(
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => FilledButton(
-                onPressed: null,
-                child: const Text('Price unavailable — retry'),
-              ),
-              data: (price) => FilledButton(
-                // CTA disabled until valid (acceptance §3.3).
-                onPressed: form.isValid
-                    ? () {
-                        ref.read(journeyProvider.notifier).start(
-                              indexNumber: form.indexNumber,
-                              examType: form.examType,
-                              examYear: form.examYear,
-                              channel: form.channel,
-                              phone: form.phone,
-                            );
-                        onJourneyStart();
-                      }
-                    : null,
-                child: Text('Pay ${price.display} & Retrieve'),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Container(
+                      decoration: waecCardDecoration(),
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _cardSection(child: _lockedIndex(context)),
+                          _cardSection(child: _examTypeDropdown(form, ref)),
+                          _cardSection(child: _examYearDropdown(form, ref)),
+                          _cardSection(
+                              last: true,
+                              child: _paymentMethods(form, ref)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // CTA with dynamic server-driven price (plan §3.3).
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                    child: priceAsync.when(
+                      loading: () => const SizedBox(
+                        height: 56,
+                        child: Center(
+                            child:
+                                CircularProgressIndicator(strokeWidth: 3)),
+                      ),
+                      error: (_, _) => const _NavyCta(
+                        label: 'Price unavailable - check connection',
+                        onPressed: null,
+                      ),
+                      data: (price) => _NavyCta(
+                        // CTA disabled until valid (acceptance §3.3).
+                        label: 'Pay ${price.display} & Fetch Result',
+                        onPressed:
+                            form.isValid ? () => _start(ref, form) : null,
+                      ),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(28, 12, 28, 0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 13, color: Color(0xFFCBD5E1)),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Payment is non-refundable. Result is stored '
+                            'locally on this device only. No server retention.',
+                            style: TextStyle(
+                                fontSize: 11,
+                                height: 1.5,
+                                color: Color(0xFF94A3B8)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -124,4 +134,297 @@ class VerificationScreen extends ConsumerWidget {
       ),
     );
   }
+
+  void _start(WidgetRef ref, VerificationForm form) {
+    ref.read(journeyProvider.notifier).start(
+          indexNumber:
+              form.indexNumber.isEmpty ? indexNumber : form.indexNumber,
+          examType: form.examType,
+          examYear: form.examYear,
+          channel: form.channel,
+          phone: form.phone,
+        );
+    onJourneyStart();
+  }
+
+  /// One bordered row of the main card.
+  Widget _cardSection({required Widget child, bool last = false}) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+        decoration: BoxDecoration(
+          border: last
+              ? null
+              : const Border(
+                  bottom: BorderSide(color: Color(0xFFF1F5F9)),
+                ),
+        ),
+        child: child,
+      );
+
+  /// Index number display box — the session index is locked in (Figma).
+  Widget _lockedIndex(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          waecFieldLabel('Index Number'),
+          const SizedBox(height: 8),
+          Container(
+            height: 50,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: waecFieldBoxDecoration(),
+            child: Row(
+              children: [
+                const Icon(Icons.description_outlined,
+                    size: 15, color: Color(0xFF94A3B8)),
+                const SizedBox(width: 12),
+                Text(indexNumber, style: WaecTheme.monoNum(14, WaecColors.navy)),
+                const Spacer(),
+                const WaecChip(label: 'LOCKED'),
+              ],
+            ),
+          ),
+        ],
+      );
+
+  /// Examination type dropdown (BECE / WASSCE School / WASSCE Private).
+  Widget _examTypeDropdown(VerificationForm form, WidgetRef ref) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          waecFieldLabel('Examination Type'),
+          const SizedBox(height: 8),
+          _DropdownBox<ExamType>(
+            value: form.examType,
+            items: const {
+              ExamType.wassceSchool: 'WASSCE School',
+              ExamType.wasscePrivate: 'WASSCE Private',
+              ExamType.bece: 'BECE',
+            },
+            onChanged: ref.read(verificationFormProvider.notifier).setExam,
+          ),
+        ],
+      );
+
+  /// Examination year dropdown (2021..2026).
+  Widget _examYearDropdown(VerificationForm form, WidgetRef ref) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          waecFieldLabel('Examination Year'),
+          const SizedBox(height: 8),
+          _DropdownBox<String>(
+            value: form.examYear,
+            items: {for (final y in _examYears) y: y},
+            onChanged: ref.read(verificationFormProvider.notifier).setYear,
+          ),
+        ],
+      );
+
+  /// Mobile Money vs Card toggles, plus the MoMo number input when the
+  /// mobile-money channel is selected (form validity requires the number).
+  Widget _paymentMethods(VerificationForm form, WidgetRef ref) {
+    final notifier = ref.read(verificationFormProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        waecFieldLabel('Payment Method'),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _PaymentTile(
+                label: 'Mobile Money',
+                active: form.channel != PaymentChannel.card,
+                onTap: () => notifier.setChannel(PaymentChannel.mtnMomo),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _PaymentTile(
+                label: 'Card',
+                active: form.channel == PaymentChannel.card,
+                onTap: () => notifier.setChannel(PaymentChannel.card),
+              ),
+            ),
+          ],
+        ),
+        if (form.channel != PaymentChannel.card) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 50,
+            child: TextFormField(
+              initialValue: form.phone,
+              keyboardType: TextInputType.phone,
+              maxLength: 10,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontFamily: 'JetBrains Mono',
+                  letterSpacing: 0.6,
+                  color: WaecColors.navy),
+              decoration: InputDecoration(
+                hintText: 'MoMo number (0244000000)',
+                hintStyle:
+                    const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+                counterText: '',
+                isDense: true,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                enabledBorder: waecInputBorder(),
+                focusedBorder: waecInputBorder(
+                    color: WaecColors.mint.withValues(alpha: 0.6)),
+                border: waecInputBorder(),
+                fillColor: const Color(0xFFF8FAFC),
+                filled: true,
+              ),
+              onChanged: notifier.setPhone,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
 }
+
+/// Rounded outline used by the inset fields inside the Figma card.
+OutlineInputBorder waecInputBorder({Color color = const Color(0xFFE2E8F0)}) =>
+    OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: color, width: 1.5),
+    );
+
+
+/// Figma-styled select box backed by [DropdownButtonFormField].
+class _DropdownBox<T> extends StatelessWidget {
+  const _DropdownBox(
+      {required this.value, required this.items, required this.onChanged});
+
+  final T value;
+  final Map<T, String> items;
+  final void Function(T) onChanged;
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<T>(
+        initialValue: value,
+        isExpanded: true,
+        decoration: InputDecoration(
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          enabledBorder: waecInputBorder(),
+          focusedBorder:
+              waecInputBorder(color: WaecColors.mint.withValues(alpha: 0.6)),
+          border: waecInputBorder(),
+          filled: true,
+          fillColor: const Color(0xFFF8FAFC),
+        ),
+        style: const TextStyle(
+            fontSize: 14, fontWeight: FontWeight.w500, color: WaecColors.navy),
+        items: [
+          for (final e in items.entries)
+            DropdownMenuItem(value: e.key, child: Text(e.value)),
+        ],
+        onChanged: (v) {
+          if (v != null) onChanged(v);
+        },
+      );
+}
+
+
+/// Payment-method radio tile (navy when active, per Figma).
+class _PaymentTile extends StatelessWidget {
+  const _PaymentTile(
+      {required this.label, required this.active, required this.onTap});
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          height: 50,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: active ? WaecColors.navy : const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color:
+                    active ? WaecColors.navy : const Color(0xFFE2E8F0),
+                width: 1.5),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: active ? WaecColors.mint : Colors.transparent,
+                  border: Border.all(
+                      color: active
+                          ? WaecColors.mint
+                          : const Color(0xFFCBD5E1),
+                      width: 2),
+                ),
+                child: active
+                    ? const Padding(
+                        padding: EdgeInsets.all(3),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: WaecColors.navy,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: active ? Colors.white : WaecColors.navy,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+
+/// Full-width navy CTA button (Figma's "Pay GHc 25.00 & Fetch Result").
+class _NavyCta extends StatelessWidget {
+  const _NavyCta({required this.label, required this.onPressed});
+
+  final String label;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => FilledButton(
+        style: FilledButton.styleFrom(
+          backgroundColor: WaecColors.navy,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: const Color(0xFF94A3B8),
+          disabledForegroundColor: Colors.white,
+          minimumSize: const Size.fromHeight(56),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(WaecRadii.md)),
+          textStyle: const TextStyle(
+              fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 0.2),
+        ),
+        onPressed: onPressed,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.menu_book_rounded,
+                size: 18, color: WaecColors.mint),
+            const SizedBox(width: 12),
+            Flexible(child: Text(label, textAlign: TextAlign.center)),
+          ],
+        ),
+      );
+}
+
+

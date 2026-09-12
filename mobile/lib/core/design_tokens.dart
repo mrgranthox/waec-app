@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 /// WAEC platform design tokens (plan §3.1).
 ///
 /// Single source of truth for colors, typography and spacing.
 /// Navy `#0A2540` + mint `#00D4B1` brand; light canvas `#F8FAFC`,
-/// dark canvas `#051424`; Public Sans typography.
+/// dark canvas `#051424`. Typography follows the WAEC Direct design
+/// system: DM Sans (UI) + JetBrains Mono (index / reference numbers),
+/// loaded at runtime via google_fonts (see docs/WAEC Result Verification
+/// App/src/index.css).
 abstract final class WaecColors {
   // Brand
   static const Color navy = Color(0xFF0A2540);
@@ -51,7 +55,10 @@ abstract final class WaecRadii {
 
 /// Builds the light and dark [ThemeData] for the app.
 abstract final class WaecTheme {
-  static const String fontFamily = 'PublicSans';
+  /// UI font (DM Sans) and the monospace used for index / reference numbers
+  /// (JetBrains Mono), matching the WAEC Direct design system.
+  static const String fontFamily = 'DM Sans';
+  static const String monoFamily = 'JetBrains Mono';
 
   static ThemeData light() => _base(Brightness.light);
   static ThemeData dark() => _base(Brightness.dark);
@@ -66,11 +73,16 @@ abstract final class WaecTheme {
       surface: isLight ? WaecColors.canvasLight : WaecColors.canvasDark,
     );
 
+    // Apply DM Sans as the default text theme; JetBrains Mono is applied
+    // selectively to index / reference-number text via [WaecTheme.mono].
+    final baseTextTheme = GoogleFonts.dmSansTextTheme();
+
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: colorScheme.surface,
       fontFamily: fontFamily,
+      textTheme: baseTextTheme,
       appBarTheme: AppBarTheme(
         backgroundColor: colorScheme.surface,
         foregroundColor:
@@ -123,4 +135,19 @@ abstract final class WaecTheme {
       ),
     );
   }
+
+  /// Convenience: a [TextStyle] using JetBrains Mono for index numbers,
+  /// reference codes and other monospaced identifiers (per the design system).
+  static TextStyle get mono => GoogleFonts.jetBrainsMono(
+        color: WaecColors.textPrimaryLight,
+      );
+
+  /// Letter-spaced monospace style for reference numbers shown on cards.
+  static TextStyle monoNum(double size, [Color color = WaecColors.textPrimaryLight]) =>
+      GoogleFonts.jetBrainsMono(
+        fontSize: size,
+        letterSpacing: 0.08,
+        fontWeight: FontWeight.w600,
+        color: color,
+      );
 }

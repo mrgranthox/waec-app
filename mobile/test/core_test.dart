@@ -3,9 +3,9 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waec_app/core/api_client.dart';
-import 'package:waec_app/core/domain_types.dart';
-import 'package:waec_app/core/network/retry_policy.dart';
+import 'package:waec_direct/core/api_client.dart';
+import 'package:waec_direct/core/domain_types.dart';
+import 'package:waec_direct/core/network/retry_policy.dart';
 
 void main() {
   group('IndexNumberValidator', () {

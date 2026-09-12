@@ -1,0 +1,27 @@
+{
+  "appName": "WAEC Direct",
+  "packageName": "waec_direct",
+  "displayName": "WAEC Direct",
+  "version": "3.1.4",
+  "buildNumber": "20260901",
+  "androidApplicationId": "gh.com.waecplatform.waecdirect",
+  "iosBundleId": "gh.com.waecplatform.waecdirect",
+  "logo": "assets/logo.png",
+  "splash": "assets/splash.png",
+  "colors": {
+    "ink": "#0A2540",
+    "teal": "#00D4B1",
+    "surface": "#F8FAFC",
+    "border": "#E2E8F0",
+    "muted": "#64748B",
+    "danger": "#EF4444",
+    "amber": "#F59E0B"
+  },
+  "fonts": {
+    "sans": "DM Sans",
+    "mono": "JetBrains Mono"
+  },
+  "publisher": "WAEC Ghana",
+  "minOs": "Android 9+ / iOS 15+",
+  "apiVersion": "WAEC-GW/2.8"
+}

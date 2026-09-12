@@ -3,8 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/design_tokens.dart';
 import 'core/domain_types.dart';
+import 'features/about/about_screen.dart';
 import 'features/auth/auth_screen.dart';
 import 'features/history/history_screen.dart';
+import 'features/legal/privacy_screen.dart';
+import 'features/legal/terms_screen.dart';
 import 'features/processing/processing_screen.dart';
 import 'features/results/result_canvas.dart';
 import 'features/verification/verification_providers.dart';
@@ -99,7 +102,9 @@ class _LifecycleGuardState extends State<_LifecycleGuard>
   Widget build(BuildContext context) => widget.child;
 }
 
-/// Authenticated shell: verification → processing → result; history tab.
+/// Authenticated shell — the Figma App.tsx app frame: bottom navigation
+/// (Check Result / History / About & Legal) with full-screen overlays for
+/// the processing modal and the official result.
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key, required this.indexNumber});
 
@@ -110,98 +115,181 @@ class HomeShell extends ConsumerStatefulWidget {
 }
 
 class _HomeShellState extends ConsumerState<HomeShell> {
+  int _tab = 0;
   bool _showProcessing = false;
   bool _showResult = false;
+
+  void _onJourneyStart() => setState(() => _showProcessing = true);
+
+  void _onProcessingComplete() {
+    setState(() {
+      _showProcessing = false;
+      _showResult = true;
+    });
+  }
+
+  void _closeResult() {
+    setState(() {
+      _showResult = false;
+      _tab = 0;
+    });
+  }
+
+  void _openLegal(LegalScreen screen) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => screen == LegalScreen.privacy
+          ? const PrivacyScreen()
+          : const TermsScreen(),
+    ));
+  }
 
   @override
   Widget build(BuildContext context) {
     final journey = ref.watch(journeyProvider);
 
-    if (_showProcessing && !journey.isTerminal) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('WAEC Direct')),
-        body: ProcessingScreen(
-          onComplete: () => setState(() {
-            _showProcessing = false;
-            _showResult = true;
-          }),
-        ),
-      );
-    }
+    // Journey reached a terminal failed state: drop back to the form.
+    ref.listen(journeyProvider, (prev, next) {
+      if (next.current == TransactionStage.failed && _showProcessing) {
+        setState(() => _showProcessing = false);
+      }
+    });
 
     if (_showResult && journey.current == TransactionStage.complete) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Your Result')),
-        body: ListView(
-          padding: const EdgeInsets.all(WaecSpacing.md),
-          children: [
-            ResultCanvas(
-              indexNumber: widget.indexNumber,
-              examType: ref.read(verificationFormProvider).examType,
-              examYear: ref.read(verificationFormProvider).examYear,
-              candidateName: 'CANDIDATE',
-              grades: const [],
-              aggregate: '',
-              graceExpiresAt: DateTime.now().add(const Duration(hours: 24)),
-            ),
-          ],
-        ),
+      return _ResultHost(
+        indexNumber: widget.indexNumber,
+        onBack: _closeResult,
       );
     }
 
     return Scaffold(
-      body: ProcessingScreenSwap(
-        showProcessing: _showProcessing,
-        onJourneyStart: () => setState(() => _showProcessing = true),
-        indexNumber: widget.indexNumber,
-        onShowResult: () => setState(() => _showResult = true),
-      ),
-    );
-  }
-}
-
-/// Tab shell hosting verification + history.
-class ProcessingScreenSwap extends StatelessWidget {
-  const ProcessingScreenSwap({
-    super.key,
-    required this.showProcessing,
-    required this.onJourneyStart,
-    required this.indexNumber,
-    required this.onShowResult,
-  });
-
-  final bool showProcessing;
-  final VoidCallback onJourneyStart;
-  final String indexNumber;
-  final VoidCallback onShowResult;
-
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('WAEC Direct'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.fact_check_outlined), text: 'Verify'),
-              Tab(icon: Icon(Icons.history), text: 'History'),
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _tab,
+            children: [
+              VerificationScreen(
+                onJourneyStart: _onJourneyStart,
+                indexNumber: widget.indexNumber,
+              ),
+              HistoryScreen(
+                snapshots: const [],
+                graceActiveIds: const {},
+                onRefetch: (_) {},
+                onOpen: (_) => setState(() => _showResult = true),
+                onDelete: (_) {},
+              ),
+              AboutScreen(onNavigate: _openLegal),
             ],
           ),
-        ),
-        body: TabBarView(
-          children: [
-            VerificationScreen(onJourneyStart: onJourneyStart),
-            HistoryScreen(
-              snapshots: const [],
-              graceActiveIds: const {},
-              onRefetch: (_) {},
-              onOpen: (_) {},
-              onDelete: (_) {},
+          // Verification modal overlay (Figma VerificationModal).
+          if (_showProcessing && !journey.isTerminal)
+            Positioned.fill(
+              child: ProcessingScreen(onComplete: _onProcessingComplete),
             ),
-          ],
-        ),
+        ],
+      ),
+      bottomNavigationBar: _WaecBottomNav(
+        index: _tab,
+        onChanged: (i) => setState(() => _tab = i),
       ),
     );
   }
 }
+
+/// Result host page shown after a successful journey; supplies the
+/// in-memory-only grade payload (plan §3.5).
+class _ResultHost extends ConsumerWidget {
+  const _ResultHost({required this.indexNumber, required this.onBack});
+
+  final String indexNumber;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final form = ref.read(verificationFormProvider);
+    return ResultCanvas(
+      indexNumber: indexNumber,
+      examType: form.examType,
+      examYear: form.examYear,
+      candidateName: 'CANDIDATE',
+      grades: const <SubjectGradeView>[],
+      aggregate: '',
+      graceExpiresAt: DateTime.now().add(const Duration(hours: 24)),
+      onBack: onBack,
+    );
+  }
+}
+
+/// Figma BottomNav: three tabs on a white bar, mint active dot.
+class _WaecBottomNav extends StatelessWidget {
+  const _WaecBottomNav({required this.index, required this.onChanged});
+
+  final int index;
+  final ValueChanged<int> onChanged;
+
+  static const _tabs = [
+    ('Check Result', Icons.search),
+    ('History', Icons.calendar_today_outlined),
+    ('About & Legal', Icons.info_outline),
+  ];
+
+  @override
+  Widget build(BuildContext context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 4, top: 8),
+            child: Row(
+              children: [
+                for (var i = 0; i < _tabs.length; i++)
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => onChanged(i),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _tabs[i].$2,
+                            size: 20,
+                            color: index == i
+                                ? WaecColors.mint
+                                : const Color(0xFFCBD5E1),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _tabs[i].$1,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                              color: index == i
+                                  ? WaecColors.navy
+                                  : const Color(0xFF94A3B8),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          if (index == i)
+                            Container(
+                              width: 4,
+                              height: 4,
+                              decoration: const BoxDecoration(
+                                color: WaecColors.mint,
+                                shape: BoxShape.circle,
+                              ),
+                            )
+                          else
+                            const SizedBox(width: 4, height: 4),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+

@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 
 import '../../core/design_tokens.dart';
 import '../../core/storage/encrypted_archive.dart';
+import '../../core/ui/waec_ui.dart';
 
-/// Transaction history — plan §3.6.
+/// Transaction history — port of
+/// docs/WAEC Result Verification App/src/screens/HistoryScreen.tsx.
 ///
-/// Past purchases from the encrypted archive, a free re-fetch button
-/// while the 24h grace window is active, and irreversible user-initiated
-/// delete.
+/// Figma drives the layout (navy log header, "local storage only" notice,
+/// per-record cards with monospace id + "Saved Local" chip). Data still
+/// comes from the encrypted archive (plan §3.6): free re-fetch while the
+/// 24h grace window is active, and irreversible user-initiated delete.
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({
     super.key,
@@ -19,6 +22,7 @@ class HistoryScreen extends StatelessWidget {
   });
 
   final List<ArchiveMeta> snapshots;
+
   /// Ids still inside the 24h grace window (free re-fetch allowed).
   final Set<String> graceActiveIds;
   final void Function(ArchiveMeta entry) onRefetch;
@@ -27,46 +31,259 @@ class HistoryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (snapshots.isEmpty) {
-      return const Center(child: Text('No saved results yet'));
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(WaecSpacing.md),
-      itemCount: snapshots.length,
-      itemBuilder: (context, i) {
-        final s = snapshots[i];
-        final graceActive = graceActiveIds.contains(s.id);
-        return Card(
-          child: ListTile(
-            leading: Icon(
-              Icons.workspace_premium_outlined,
-              color: graceActive ? WaecColors.mint : null,
+    return Scaffold(
+      backgroundColor: WaecColors.canvasLight,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            WaecNavyHeader(
+              eyebrow: 'Transaction Log',
+              title: 'Saved Results',
+              subtitle:
+                  '${snapshots.length} records stored locally on this device',
             ),
-            title: Text('${s.examType} ${s.examYear}'),
-            subtitle: Text(_when(s.createdUnix)),
-            trailing: PopupMenuButton<String>(
-              onSelected: (v) => switch (v) {
-                'open' => onOpen(s),
-                'refetch' => onRefetch(s),
-                'delete' => onDelete(s),
-                _ => null,
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'open', child: Text('View result')),
-                // Free re-fetch during active grace (§3.6) — no re-charge.
-                if (graceActive)
-                  const PopupMenuItem(
-                      value: 'refetch',
-                      child: Text('Free re-fetch (grace)')),
-                const PopupMenuItem(
-                    value: 'delete',
-                    child: Text('Delete permanently')),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.only(bottom: WaecSpacing.xl),
+                children: [
+                  const _LocalStorageNotice(),
+                  if (snapshots.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(24, 48, 24, 0),
+                      child: Text('No saved results yet',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              fontSize: 13, color: Color(0xFF94A3B8))),
+                    )
+                  else
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+                      child: Column(
+                        children: [
+                          for (final s in snapshots)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _HistoryCard(
+                                meta: s,
+                                graceActive: graceActiveIds.contains(s.id),
+                                onOpen: () => onOpen(s),
+                                onRefetch: () => onRefetch(s),
+                                onDelete: () => onDelete(s),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  if (snapshots.isNotEmpty) const _EndOfRecords(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// White notice card explaining device-local retention (Figma's shield row).
+class _LocalStorageNotice extends StatelessWidget {
+  const _LocalStorageNotice();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: waecCardDecoration(),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF9),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.workspace_premium_outlined,
+                  size: 16, color: WaecColors.mint),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Local Storage Only',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: WaecColors.navy)),
+                  SizedBox(height: 2),
+                  Text(
+                      'All records exist only on this device. No cloud backup.',
+                      style:
+                          TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+/// "End of records" divider shown under the list (Figma footer hint).
+class _EndOfRecords extends StatelessWidget {
+  const _EndOfRecords();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+        padding: EdgeInsets.fromLTRB(24, 16, 24, 0),
+        child: Row(
+          children: [
+            Expanded(child: Divider(color: Color(0xFFE2E8F0), thickness: 1)),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text('End of records',
+                  style: TextStyle(fontSize: 11, color: Color(0xFFCBD5E1))),
+            ),
+            Expanded(child: Divider(color: Color(0xFFE2E8F0), thickness: 1)),
+          ],
+        ),
+      );
+}
+
+/// One saved-result card.
+class _HistoryCard extends StatelessWidget {
+  const _HistoryCard({
+    required this.meta,
+    required this.graceActive,
+    required this.onOpen,
+    required this.onRefetch,
+    required this.onDelete,
+  });
+
+  final ArchiveMeta meta;
+  final bool graceActive;
+  final VoidCallback onOpen;
+  final VoidCallback onRefetch;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: waecCardDecoration(),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Card header: monospace id + saved chip + overflow menu.
+          Container(
+            color: const Color(0xFFFAFBFC),
+            padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: Color(0xFFF1F5F9))),
+            ),
+            child: Row(
+              children: [
+                Text(meta.id, style: WaecTheme.monoNum(13, WaecColors.navy)),
+                const Spacer(),
+                WaecChip(
+                  label: graceActive ? 'Grace Active' : 'Saved Local',
+                  foreground: graceActive
+                      ? WaecColors.navy
+                      : const Color(0xFF00856F),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_horiz,
+                      size: 18, color: Color(0xFF94A3B8)),
+                  onSelected: (v) => switch (v) {
+                    'open' => onOpen(),
+                    'refetch' => onRefetch(),
+                    'delete' => onDelete(),
+                    _ => null,
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                        value: 'open', child: Text('View result')),
+                    // Free re-fetch during active grace (§3.6) — no re-charge.
+                    if (graceActive)
+                      const PopupMenuItem(
+                          value: 'refetch',
+                          child: Text('Free re-fetch (grace)')),
+                    const PopupMenuItem(
+                        value: 'delete', child: Text('Delete permanently')),
+                  ],
+                ),
               ],
             ),
-            onTap: () => onOpen(s),
           ),
-        );
-      },
+          // Card body.
+          InkWell(
+            onTap: onOpen,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(meta.examType,
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: WaecColors.navy)),
+                            const SizedBox(height: 2),
+                            Text('Year ${meta.examYear}',
+                                style: const TextStyle(
+                                    fontSize: 12, color: Color(0xFF64748B))),
+                          ],
+                        ),
+                      ),
+                      Text(_when(meta.createdUnix),
+                          style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: WaecColors.navy)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Flexible(
+                        child: Text('REF: ${meta.id}',
+                            style: const TextStyle(
+                                fontSize: 10,
+                                fontFamily: 'JetBrains Mono',
+                                color: Color(0xFF94A3B8))),
+                      ),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: WaecColors.navy,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          minimumSize: Size.zero,
+                          textStyle: const TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.w600),
+                        ),
+                        icon: const Icon(Icons.chevron_right, size: 14),
+                        label: const Text('View Stored Result'),
+                        onPressed: onOpen,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
