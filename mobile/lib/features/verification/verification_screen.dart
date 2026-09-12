@@ -10,7 +10,8 @@ import 'verification_providers.dart';
 /// docs/WAEC Result Verification App/src/screens/HomeScreen.tsx.
 ///
 /// Figma drives the layout (navy session bar, locked index, dropdowns,
-/// payment toggles, navy CTA); all state still comes from the existing
+/// navy CTA). The payment method is chosen on Paystack's hosted checkout,
+/// so it is no longer collected in-app. All state comes from the existing
 /// [verificationFormProvider] / [journeyProvider] Riverpod graph.
 class VerificationScreen extends ConsumerWidget {
   const VerificationScreen({
@@ -75,15 +76,17 @@ class VerificationScreen extends ConsumerWidget {
                         children: [
                           _cardSection(child: _lockedIndex(context)),
                           _cardSection(child: _examTypeDropdown(form, ref)),
-                          _cardSection(child: _examYearDropdown(form, ref)),
                           _cardSection(
                               last: true,
-                              child: _paymentMethods(form, ref)),
+                              child: _examYearDropdown(form, ref)),
                         ],
                       ),
                     ),
                   ),
-                  // CTA with dynamic server-driven price (plan §3.3).
+                  // CTA with dynamic server-driven price (plan §3.3). When the
+                  // pricing endpoint is unreachable we fall back to the standard
+                  // fee so the journey is never blocked (the authoritative amount
+                  // is shown again on Paystack's checkout).
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
                     child: priceAsync.when(
@@ -93,9 +96,13 @@ class VerificationScreen extends ConsumerWidget {
                             child:
                                 CircularProgressIndicator(strokeWidth: 3)),
                       ),
-                      error: (_, _) => const _NavyCta(
-                        label: 'Price unavailable - check connection',
-                        onPressed: null,
+                      // getPricing already falls back to a default on network
+                      // error, so this only fires while the request is in flight
+                      // or if the backend returns an unusable 0 amount.
+                      error: (_, _) => _NavyCta(
+                        label: 'Pay ${fallbackPrice.display} & Fetch Result',
+                        onPressed:
+                            form.isValid ? () => _start(ref, form) : null,
                       ),
                       data: (price) => _NavyCta(
                         // CTA disabled until valid (acceptance §3.3).
@@ -141,8 +148,6 @@ class VerificationScreen extends ConsumerWidget {
               form.indexNumber.isEmpty ? indexNumber : form.indexNumber,
           examType: form.examType,
           examYear: form.examYear,
-          channel: form.channel,
-          phone: form.phone,
         );
     onJourneyStart();
   }
@@ -216,69 +221,6 @@ class VerificationScreen extends ConsumerWidget {
         ],
       );
 
-  /// Mobile Money vs Card toggles, plus the MoMo number input when the
-  /// mobile-money channel is selected (form validity requires the number).
-  Widget _paymentMethods(VerificationForm form, WidgetRef ref) {
-    final notifier = ref.read(verificationFormProvider.notifier);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        waecFieldLabel('Payment Method'),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _PaymentTile(
-                label: 'Mobile Money',
-                active: form.channel != PaymentChannel.card,
-                onTap: () => notifier.setChannel(PaymentChannel.mtnMomo),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _PaymentTile(
-                label: 'Card',
-                active: form.channel == PaymentChannel.card,
-                onTap: () => notifier.setChannel(PaymentChannel.card),
-              ),
-            ),
-          ],
-        ),
-        if (form.channel != PaymentChannel.card) ...[
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 50,
-            child: TextFormField(
-              initialValue: form.phone,
-              keyboardType: TextInputType.phone,
-              maxLength: 10,
-              style: const TextStyle(
-                  fontSize: 14,
-                  fontFamily: 'JetBrains Mono',
-                  letterSpacing: 0.6,
-                  color: WaecColors.navy),
-              decoration: InputDecoration(
-                hintText: 'MoMo number (0244000000)',
-                hintStyle:
-                    const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-                counterText: '',
-                isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                enabledBorder: waecInputBorder(),
-                focusedBorder: waecInputBorder(
-                    color: WaecColors.mint.withValues(alpha: 0.6)),
-                border: waecInputBorder(),
-                fillColor: const Color(0xFFF8FAFC),
-                filled: true,
-              ),
-              onChanged: notifier.setPhone,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
 }
 
 /// Rounded outline used by the inset fields inside the Figma card.
@@ -322,74 +264,6 @@ class _DropdownBox<T> extends StatelessWidget {
         onChanged: (v) {
           if (v != null) onChanged(v);
         },
-      );
-}
-
-
-/// Payment-method radio tile (navy when active, per Figma).
-class _PaymentTile extends StatelessWidget {
-  const _PaymentTile(
-      {required this.label, required this.active, required this.onTap});
-
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          height: 50,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: active ? WaecColors.navy : const Color(0xFFF8FAFC),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-                color:
-                    active ? WaecColors.navy : const Color(0xFFE2E8F0),
-                width: 1.5),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 16,
-                height: 16,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: active ? WaecColors.mint : Colors.transparent,
-                  border: Border.all(
-                      color: active
-                          ? WaecColors.mint
-                          : const Color(0xFFCBD5E1),
-                      width: 2),
-                ),
-                child: active
-                    ? const Padding(
-                        padding: EdgeInsets.all(3),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: WaecColors.navy,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      )
-                    : null,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: active ? Colors.white : WaecColors.navy,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       );
 }
 

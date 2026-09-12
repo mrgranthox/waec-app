@@ -9,42 +9,32 @@ import '../../core/network/retry_policy.dart';
 /// App lifecycle — plan §3.8: result state zero-out on backgrounding.
 enum AppLifecycle { active, backgrounded }
 
-/// Verification form state (index, exam, year, channel).
+/// Verification form state (index, exam, year). Payment method is chosen by
+/// the user on Paystack's hosted checkout, so it is no longer collected in-app.
 class VerificationForm {
   const VerificationForm({
     this.indexNumber = '',
     this.examType = ExamType.bece,
     this.examYear = '2025',
-    this.channel = PaymentChannel.mtnMomo,
-    this.phone = '',
   });
 
   final String indexNumber;
   final ExamType examType;
   final String examYear;
-  final PaymentChannel channel;
-  final String phone;
 
   VerificationForm copyWith({
     String? indexNumber,
     ExamType? examType,
     String? examYear,
-    PaymentChannel? channel,
-    String? phone,
   }) =>
       VerificationForm(
         indexNumber: indexNumber ?? this.indexNumber,
         examType: examType ?? this.examType,
         examYear: examYear ?? this.examYear,
-        channel: channel ?? this.channel,
-        phone: phone ?? this.phone,
       );
 
-  /// CTA enabled only when the form is fully valid (plan §3.3).
-  bool get isValid =>
-      IndexNumberValidator.isValid(indexNumber) &&
-      (channel != PaymentChannel.mtnMomo ||
-          RegExp(r'^0\d{9}$').hasMatch(phone));
+  /// CTA enabled only when the locked index number is valid (plan §3.3).
+  bool get isValid => IndexNumberValidator.isValid(indexNumber);
 }
 
 class VerificationFormNotifier extends StateNotifier<VerificationForm> {
@@ -53,14 +43,18 @@ class VerificationFormNotifier extends StateNotifier<VerificationForm> {
   void setIndex(String v) => state = state.copyWith(indexNumber: v);
   void setExam(ExamType t) => state = state.copyWith(examType: t);
   void setYear(String y) => state = state.copyWith(examYear: y);
-  void setChannel(PaymentChannel c) => state = state.copyWith(channel: c);
-  void setPhone(String p) => state = state.copyWith(phone: p);
 }
 
 /// Live price fetched from backend config (CTA shows server-driven GHS).
+/// If the backend is unreachable the UI falls back to a default so the
+/// journey is never blocked (see verification_screen.dart).
 final priceProvider = FutureProvider.family<Price, ExamType>((ref, exam) {
   return ref.watch(waecApiProvider).getPricing(exam);
 });
+
+/// Offline-safe price used when the pricing endpoint is unreachable.
+/// Matches the backend's standard single-result fee (GHS 20.00).
+const fallbackPrice = Price(amountPesewas: 2000, currency: 'GHS');
 
 final verificationFormProvider =
     StateNotifierProvider<VerificationFormNotifier, VerificationForm>(
@@ -91,13 +85,12 @@ class JourneyNotifier extends StateNotifier<JourneyState> {
   StreamSubscription<TransactionStage>? _sub;
 
   /// Begin the retrieval journey: init charge (idempotent), then stream
-  /// stages via SSE-with-polling-fallback.
+  /// stages via SSE-with-polling-fallback. Payment method is chosen by the
+  /// user on Paystack's hosted checkout, so no in-app channel/phone is sent.
   Future<void> start({
     required String indexNumber,
     required ExamType examType,
     required String examYear,
-    required PaymentChannel channel,
-    required String phone,
   }) async {
     // Idempotency key created ONCE and preserved across all retries of
     // this logical operation (plan §3.9 / §4.9).
@@ -108,8 +101,6 @@ class JourneyNotifier extends StateNotifier<JourneyState> {
         indexNumber: indexNumber,
         examType: examType,
         examYear: examYear,
-        channel: channel,
-        phone: phone,
       );
       state = JourneyState(transactionId: init.transactionId);
       _sub = _api.transactionStages(init.transactionId).listen(

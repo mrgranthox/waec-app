@@ -13,10 +13,13 @@ abstract class WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
-    required PaymentChannel channel,
-    required String phone,
   });
 
+  /// Live price from the backend config endpoint (dynamic GHS, plan §2.2).
+  ///
+  /// Falls back to a safe default (GHS 20.00) if the endpoint is
+  /// unreachable, so the verification journey is never blocked by a missing
+  /// price (Paystack's checkout is the single source of truth for the amount).
   Future<Price> getPricing(ExamType examType);
 
   /// Live transaction stage stream: SSE with adaptive 2-second
@@ -92,20 +95,26 @@ class HttpWaecApi implements WaecApi {
 
   @override
   Future<Price> getPricing(ExamType examType) async {
-    final result = await retryWithBackoff<Map<String, dynamic>>(() async {
-      final resp = await _dio.get<Map<String, dynamic>>(
-        '/v1/payment/pricing',
-        queryParameters: {'exam_type': examType.code},
-      );
-      return resp.data ?? <String, dynamic>{};
-    });
-    return switch (result) {
-      RetrySuccess(:final value) => Price(
-        amountPesewas: (value['amount_pesewas'] as num?)?.toInt() ?? 0,
-        currency: value['currency'] as String? ?? 'GHS',
-      ),
-      RetryExhausted(:final lastError) => throw lastError,
-    };
+    try {
+      final result = await retryWithBackoff<Map<String, dynamic>>(() async {
+        final resp = await _dio.get<Map<String, dynamic>>(
+          '/v1/payment/pricing',
+          queryParameters: {'exam_type': examType.code},
+        );
+        return resp.data ?? <String, dynamic>{};
+      });
+      return switch (result) {
+        RetrySuccess(:final value) => Price(
+          amountPesewas: (value['amount_pesewas'] as num?)?.toInt() ?? 0,
+          currency: value['currency'] as String? ?? 'GHS',
+        ),
+        RetryExhausted(:final lastError) => throw lastError,
+      };
+    } on Object {
+      // Backend unreachable → use the standard single-result fee so the
+      // CTA is never stuck on "Price unavailable".
+      return const Price(amountPesewas: 2000, currency: 'GHS');
+    }
   }
 
   @override
@@ -114,19 +123,17 @@ class HttpWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
-    required PaymentChannel channel,
-    required String phone,
   }) async {
     final result = await retryWithBackoff<Map<String, dynamic>>(() async {
       final resp = await _dio.post<Map<String, dynamic>>(
         '/v1/payment/charge',
         options: Options(headers: {'X-Idempotency-Key': idempotencyKey}),
+        // Payment method is chosen by the user on Paystack's hosted
+        // checkout; the backend derives the channel from the charge result.
         data: {
           'index_number': indexNumber,
           'exam_type': examType.code,
           'exam_year': examYear,
-          'channel': channel.code,
-          'phone': phone,
         },
       );
       return resp.data ?? <String, dynamic>{};
@@ -411,8 +418,6 @@ class MockWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
-    required PaymentChannel channel,
-    required String phone,
   }) async {
     charges.add(idempotencyKey);
     return ChargeInit(
