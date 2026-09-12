@@ -1,4 +1,4 @@
-package gh.com.waecplatform.waec_app
+package gh.com.waecplatform.waecdirect
 
 import io.flutter.embedding.android.FlutterActivity
 
