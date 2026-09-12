@@ -12,10 +12,10 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2026"
 rust-version = "1.75"
 license = "Proprietary"
-authors = ["WAEC Platform Team"]
+authors = ["Edward Nyame"]
 
 [workspace.dependencies]
 # Async runtime
@@ -64,3 +64,14 @@ config = { version = "0.14", features = ["yaml"] }
 # Testing
 mockito = "1"
 temp-env = "0.3"
+
+# In your Rust workspace/package Cargo.toml
+
+# Strip debug symbols from external crates in dev mode
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+# Keep your local project build optimized
+[profile.dev]
+debug = 1 # 1 = line tables only (drastically smaller than level 2)

@@ -9,18 +9,6 @@ enum ExamType {
   final String displayName;
 }
 
-/// Payment channels via Paystack Ghana (plan Appendix A).
-enum PaymentChannel {
-  mtnMomo('MTN MoMo', 'MTN MoMo'),
-  telecelCash('Telecel Cash', 'Telecel Cash'),
-  atMoney('AT Money', 'AT Money'),
-  card('CARD', 'Visa / Mastercard');
-
-  const PaymentChannel(this.code, this.displayName);
-  final String code;
-  final String displayName;
-}
-
 /// Transaction lifecycle stages streamed over SSE (plan §3.4).
 enum TransactionStage {
   paymentConfirmation('Payment Confirmation'),

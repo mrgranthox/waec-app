@@ -19,8 +19,6 @@ class _FakeWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
-    required PaymentChannel channel,
-    required String phone,
   }) async =>
       const ChargeInit(
         transactionId: 'tx-1',

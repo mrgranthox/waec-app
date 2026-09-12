@@ -63,7 +63,13 @@ class Price {
   final int amountPesewas;
   final String currency;
 
-  String get display => 'GHS ${(amountPesewas / 100).toStringAsFixed(2)}';
+  String get display => amountPesewas > 0
+      ? 'GHS ${(amountPesewas / 100).toStringAsFixed(2)}'
+      // Backend config returned a non-positive amount (unseeded row, zero fee,
+      // or a malformed payload). Rather than ever showing "GHS 0.00", fall back
+      // to the standard single-result fee so the CTA stays actionable. The
+      // authoritative amount is shown again on Paystack's checkout.
+      : 'GHS ${(2000 / 100).toStringAsFixed(2)}';
 }
 
 /// Dio-backed client with pinned-SPKI verification, backoff with jitter,
