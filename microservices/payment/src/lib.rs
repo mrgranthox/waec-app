@@ -36,9 +36,12 @@ impl PaymentState {
     }
 }
 
-/// Mock transport for tests: succeeds unless configured to fail.
+/// Mock transport for tests: succeeds unless configured to fail. Counts
+/// invocations so §4.9 tests can prove a retry storm charges once.
+#[derive(Default)]
 pub struct MockTransport {
     pub fail: bool,
+    pub calls: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -47,6 +50,7 @@ impl PaystackTransport for MockTransport {
         &self,
         req: &ChargeRequest<'_>,
     ) -> Result<paystack::ChargeData, DomainError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail {
             return Err(DomainError::new(
                 waec_common::ErrorCode::PaymentDeclined,

@@ -25,7 +25,7 @@ use crate::paystack::{base_price_pesewas, ChargeMetadata, ChargeRequest, MobileM
 use crate::PaymentState;
 
 pub struct PaymentServiceImpl {
-    state: Arc<PaymentState>,
+    pub(crate) state: Arc<PaymentState>,
 }
 
 impl PaymentServiceImpl {
@@ -183,19 +183,67 @@ impl PaymentService for PaymentServiceImpl {
     }
 }
 
-/// Webhook HMAC verification (used by the axum webhook facade).
+/// Webhook verification (plan §4.5): HMAC SHA-512 **and** timestamp window.
+///
+/// A signature alone proves authenticity, not freshness — a delivery
+/// captured off the wire replays forever. The envelope timestamp
+/// (`createdAt`, sometimes mirrored as `data.create_time`) is extracted
+/// from the raw body and required to fall inside
+/// [`waec_common::webhook::MAX_SKEW_SECS`] of our clock.
+///
+/// Strict mode is deliberate: a body without a usable timestamp is
+/// rejected rather than waved through, so an attacker cannot strip the
+/// field to downgrade verification to signature-only.
 pub fn verify_webhook(
     state: &PaymentState,
     raw_body: &[u8],
     signature: &str,
 ) -> Result<(), DomainError> {
-    waec_common::webhook::verify_paystack_signature(&state.webhook_secret, raw_body, signature)
-        .map_err(|_| {
-            DomainError::new(
-                ErrorCode::WebhookSignatureInvalid,
-                "webhook signature invalid",
-            )
-        })
+    verify_webhook_at(state, raw_body, signature, chrono::Utc::now().timestamp())
+}
+
+/// Deterministic seam for tests (and for the facade when it wants to
+/// inject its own clock).
+pub fn verify_webhook_at(
+    state: &PaymentState,
+    raw_body: &[u8],
+    signature: &str,
+    now_unix: i64,
+) -> Result<(), DomainError> {
+    let event_unix = webhook_event_time(raw_body);
+    waec_common::webhook::verify_webhook_fresh(
+        &state.webhook_secret,
+        raw_body,
+        signature,
+        event_unix,
+        now_unix,
+        true,
+    )
+    .map_err(|e| match e {
+        waec_common::webhook::WebhookError::StaleTimestamp
+        | waec_common::webhook::WebhookError::MissingTimestamp => DomainError::new(
+            ErrorCode::WebhookReplayDetected,
+            "webhook outside replay window",
+        ),
+        _ => DomainError::new(
+            ErrorCode::WebhookSignatureInvalid,
+            "webhook signature invalid",
+        ),
+    })
+}
+
+/// Lift the event timestamp out of a webhook payload, if one is present.
+/// Paystack sends `createdAt` (seconds) on the envelope and a
+/// `data.create_time` (ISO-8601 string) on the object; either is enough.
+pub fn webhook_event_time(raw_body: &[u8]) -> Option<i64> {
+    let value: serde_json::Value = serde_json::from_slice(raw_body).ok()?;
+    if let Some(ts) = value.get("createdAt").and_then(|v| v.as_i64()) {
+        return Some(ts);
+    }
+    let iso = value.get("data")?.get("create_time")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|dt| dt.timestamp())
+        .ok()
 }
 
 /// Serve with standard health checks.

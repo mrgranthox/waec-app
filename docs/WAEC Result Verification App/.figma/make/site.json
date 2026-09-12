@@ -1,0 +1,10 @@
+{
+  "description": "Easily verify WAEC examination results using your Candidate Index Number with secure payment options and a streamlined, user-friendly interface.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

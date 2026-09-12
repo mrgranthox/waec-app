@@ -14,6 +14,7 @@ pub enum ErrorCode {
     PaymentDeclined,
     PaymentDuplicateIdempotencyKey,
     WebhookSignatureInvalid,
+    WebhookReplayDetected,
     VendorsOutOfStock,
     VendorCircuitOpen,
     WaecPortalUnavailable,
@@ -39,6 +40,7 @@ impl ErrorCode {
             ErrorCode::PaymentDeclined => "PAYMENT_DECLINED",
             ErrorCode::PaymentDuplicateIdempotencyKey => "DUPLICATE_IDEMPOTENCY_KEY",
             ErrorCode::WebhookSignatureInvalid => "WEBHOOK_SIGNATURE_INVALID",
+            ErrorCode::WebhookReplayDetected => "WEBHOOK_REPLAY_DETECTED",
             ErrorCode::VendorsOutOfStock => "VENDORS_OUT_OF_STOCK",
             ErrorCode::VendorCircuitOpen => "VENDOR_CIRCUIT_OPEN",
             ErrorCode::WaecPortalUnavailable => "WAEC_PORTAL_UNAVAILABLE",
@@ -68,6 +70,7 @@ impl ErrorCode {
             | ErrorCode::CandidateNotFound
             | ErrorCode::GracePeriodExpired => Code::FailedPrecondition,
             ErrorCode::WebhookSignatureInvalid
+            | ErrorCode::WebhookReplayDetected
             | ErrorCode::AuthInvalidCredentials
             | ErrorCode::AuthTokenExpired
             | ErrorCode::AuthTokenInvalid => Code::Unauthenticated,

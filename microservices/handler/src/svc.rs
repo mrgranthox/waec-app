@@ -65,6 +65,7 @@ impl HandlerService for HandlerServiceImpl {
 
         let (payload, _drift_alert) = fetch_and_parse(
             &self.state,
+            &req.transaction_id,
             &req.index_number,
             exam,
             &req.exam_year,

@@ -104,7 +104,7 @@ impl AuthService for AuthServiceImpl {
         let req = request.into_inner();
         let now = Self::now();
 
-        let mut user = match self.state.users.find_by_index(&req.index_number).await {
+        let user = match self.state.users.find_by_index(&req.index_number).await {
             Ok(u) => u,
             Err(_) => {
                 // Uniform error — never reveal whether the account exists.
@@ -125,28 +125,45 @@ impl AuthService for AuthServiceImpl {
             .into());
         }
 
+        // Password verification (Argon2id, deliberately expensive) runs
+        // *outside* the store lock. The lockout state is therefore re-checked
+        // inside the atomic commit below, so a request that read the row
+        // before another armed the lock can still be refused (§4.6).
         match waec_common::password::verify_password(&req.password, &user.password_hash) {
             Ok(()) => {
-                if user.failed_attempts != 0 || user.locked_until != 0 {
-                    user.failed_attempts = 0;
-                    user.locked_until = 0;
-                    self.state
-                        .users
-                        .update(user.clone())
-                        .await
-                        .map_err(|e| DomainError::new(ErrorCode::Internal, e.to_string()))?;
+                let accepted = self
+                    .state
+                    .users
+                    .succeed_login(&req.index_number, Self::now())
+                    .await
+                    .map_err(|e| DomainError::new(ErrorCode::Internal, e.to_string()))?;
+                if !accepted {
+                    return Err(DomainError::new(
+                        ErrorCode::AuthLockedOut,
+                        "account temporarily locked; try later",
+                    )
+                    .into());
                 }
                 tracing::info!(user_id = %user.user_id, "login ok");
                 Ok(Response::new(self.auth_response(&user.user_id)?))
             }
             Err(_) => {
-                user.failed_attempts += 1;
-                if user.failed_attempts >= MAX_FAILED_ATTEMPTS {
-                    user.locked_until = now + LOCKOUT_SECS;
-                    user.failed_attempts = 0;
+                let locked = self
+                    .state
+                    .users
+                    .record_failure(
+                        &req.index_number,
+                        Self::now(),
+                        MAX_FAILED_ATTEMPTS,
+                        LOCKOUT_SECS,
+                    )
+                    .await
+                    .map_err(|e| DomainError::new(ErrorCode::Internal, e.to_string()))?;
+                if locked {
                     tracing::warn!(user_id = %user.user_id, "account locked out");
                 }
-                let _ = self.state.users.update(user).await;
+                // Same uniform error either way — the response must not reveal
+                // how close to the threshold the account is.
                 Err(
                     DomainError::new(ErrorCode::AuthInvalidCredentials, "invalid credentials")
                         .into(),

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tonic::Request;
 
 use crate::svc::AuthServiceImpl;
-use crate::{AuthState, InMemoryUserStore, MAX_FAILED_ATTEMPTS};
+use crate::{AuthState, InMemoryUserStore, UserStore, MAX_FAILED_ATTEMPTS};
 use waec_common::jwt::KeyStore;
 // Trait import brings the gRPC methods (register/login/…) into scope.
 use waec_common::pb::waec::auth::v1::auth_service_server::AuthService;
@@ -213,4 +213,166 @@ async fn biometric_binding() {
         .unwrap()
         .into_inner();
     assert!(resp.bound);
+}
+
+// ── §4.6: race-safe lockout under credential stuffing ──────────────────────
+
+/// A credential-stuffing storm must still lock the account.
+///
+/// With a naive read-modify-write counter, N concurrent failures each read the
+/// same value, each write `n+1`, and the account never reaches the threshold.
+/// `record_failure` holds the store's write lock across increment + arm-lock,
+/// so every increment is counted exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn credential_stuffing_storm_still_locks_account() {
+    let s = Arc::new(svc());
+    s.register(req(RegisterRequest {
+        index_number: "1002330500".into(),
+        password: "password123".into(),
+    }))
+    .await
+    .unwrap();
+
+    // Fire far more failures than the threshold, all at once.
+    let storm = 40;
+    let mut tasks = Vec::with_capacity(storm);
+    for i in 0..storm {
+        let s = Arc::clone(&s);
+        tasks.push(tokio::spawn(async move {
+            s.login(req(LoginRequest {
+                index_number: "1002330500".into(),
+                password: format!("guessed-wrong-{i}"),
+            }))
+            .await
+        }));
+    }
+    let mut codes = std::collections::HashSet::new();
+    for t in tasks {
+        // Every response is bad-credentials or locked — never a token.
+        codes.insert(
+            t.await
+                .unwrap()
+                .map_or_else(|e| e.code(), |_| tonic::Code::Ok),
+        );
+    }
+    assert!(
+        !codes.contains(&tonic::Code::Ok),
+        "storm must never authenticate, got {codes:?}"
+    );
+
+    // The decisive assertion: the lock is armed, so even the REAL password now
+    // fails. Losing increments would have left the account unlocked here.
+    let err = s
+        .login(req(LoginRequest {
+            index_number: "1002330500".into(),
+            password: "password123".into(),
+        }))
+        .await
+        .unwrap_err();
+    // AuthLockedOut maps to ResourceExhausted: the client should retry later.
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+}
+
+/// Both commit orders must end with the account locked.
+///
+/// A request that verified the correct password *before* another request armed
+/// the lock may not silently cancel that lockout, and a clearing request that
+/// lands first must not prevent a later failure from locking. Because each
+/// store method holds the write lock across its whole read-modify-write, the
+/// outcome is order-independent — which is exactly what this pins down.
+#[tokio::test]
+async fn lockout_and_success_commit_atomically_in_both_orders() {
+    async fn fresh_store() -> Arc<InMemoryUserStore> {
+        let store = Arc::new(InMemoryUserStore::new());
+        store
+            .create(
+                "1002330501",
+                &waec_common::password::hash_password("password123").unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+    }
+
+    // threshold 1 → a single failure arms a 900s lock at now = 1_000.
+    const NOW: i64 = 1_000;
+
+    // Order A: failure arms the lock, then a racing success tries to clear it.
+    let store = fresh_store().await;
+    assert!(
+        store
+            .record_failure("1002330501", NOW, 1, 900)
+            .await
+            .unwrap(),
+        "failure at threshold must arm the lock"
+    );
+    assert!(
+        !store.succeed_login("1002330501", NOW).await.unwrap(),
+        "a success while locked must be refused, not applied"
+    );
+    assert!(
+        store
+            .find_by_index("1002330501")
+            .await
+            .unwrap()
+            .locked_until
+            > NOW,
+        "lock must survive a racing success"
+    );
+
+    // Order B: the success lands first (counters clear), the late failure still
+    // reaches the threshold and locks.
+    let store = fresh_store().await;
+    assert!(
+        store.succeed_login("1002330501", NOW).await.unwrap(),
+        "an unlocked account may clear its counters"
+    );
+    assert!(
+        store
+            .record_failure("1002330501", NOW, 1, 900)
+            .await
+            .unwrap(),
+        "late failure must still lock"
+    );
+    assert!(
+        store
+            .find_by_index("1002330501")
+            .await
+            .unwrap()
+            .locked_until
+            > NOW,
+        "late failure must have armed the lock"
+    );
+}
+
+/// Locked account + correct password through the service: refused, and the
+/// refusal is the same code whether the caller's password was right or wrong
+/// once locked (no "you'd have gotten in" oracle is needed beyond lock state).
+#[tokio::test]
+async fn locked_account_rejects_correct_password() {
+    let s = svc();
+    s.register(req(RegisterRequest {
+        index_number: "1002330502".into(),
+        password: "password123".into(),
+    }))
+    .await
+    .unwrap();
+
+    for i in 0..MAX_FAILED_ATTEMPTS {
+        let _ = s
+            .login(req(LoginRequest {
+                index_number: "1002330502".into(),
+                password: format!("nope-{i}"),
+            }))
+            .await;
+    }
+
+    let err = s
+        .login(req(LoginRequest {
+            index_number: "1002330502".into(),
+            password: "password123".into(),
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
 }

@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 waec-common = { path = "../common" }
+waec-data = { path = "../data" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
@@ -19,3 +20,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
+rand = { workspace = true }

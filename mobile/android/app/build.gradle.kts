@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "gh.com.waecplatform.waec_app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -34,6 +34,22 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            // Plan §4.2: shrink and obfuscate the *Java/Kotlin* surface. The Dart
+            // side is obfuscated by `--obfuscate` in scripts/release.sh; R8 covers
+            // the plugin and activity classes that survive into the APK.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+        debug {
+            // Debug builds deliberately keep everything: R8 in a debug build only
+            // slows the loop down and breaks stack traces that are meant to be read.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

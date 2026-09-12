@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -29,13 +27,34 @@ class WaecApp extends StatelessWidget {
       theme: WaecTheme.light(),
       darkTheme: WaecTheme.dark(),
       themeMode: ThemeMode.system,
-      home: const _LifecycleGuard(child: AuthScreen(
-        onAuthenticated: _noopAuth,
-      )),
+      home: const _AuthGate(),
     );
   }
+}
 
-  static void _noopAuth(String _) {}
+/// Auth gate: shows [AuthScreen] until sign-in succeeds, then swaps to
+/// [HomeShell]. Stays wrapped in [_LifecycleGuard] so the result-state
+/// purge on backgrounding (plan §3.8) remains active for the whole session.
+class _AuthGate extends StatefulWidget {
+  const _AuthGate();
+
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  String? _indexNumber;
+
+  @override
+  Widget build(BuildContext context) {
+    return _LifecycleGuard(
+      child: _indexNumber == null
+          ? AuthScreen(
+              onAuthenticated: (index) => setState(() => _indexNumber = index),
+            )
+          : HomeShell(indexNumber: _indexNumber!),
+    );
+  }
 }
 
 /// Wraps the shell to observe app lifecycle: purges in-memory result
@@ -72,8 +91,7 @@ class _LifecycleGuardState extends State<_LifecycleGuard>
 
   void _purge() {
     // Context is valid here (observer of the shell widget).
-    final container =
-        ProviderScope.containerOf(context, listen: false);
+    final container = ProviderScope.containerOf(context, listen: false);
     container.read(lifecyclePurgerProvider)(AppLifecycle.backgrounded);
   }
 
@@ -92,29 +110,12 @@ class HomeShell extends ConsumerStatefulWidget {
 }
 
 class _HomeShellState extends ConsumerState<HomeShell> {
-  Timer? _countdownTicker;
   bool _showProcessing = false;
   bool _showResult = false;
 
   @override
-  void dispose() {
-    _countdownTicker?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final journey = ref.watch(journeyProvider);
-
-    // Keep a 1s ticker alive while the journey runs so the result canvas
-    // countdown stays live once it renders.
-    if (!journey.isTerminal && _countdownTicker == null) {
-      _countdownTicker =
-          Timer.periodic(const Duration(seconds: 1), (_) {});
-    } else if (journey.isTerminal && _countdownTicker != null) {
-      _countdownTicker?.cancel();
-      _countdownTicker = null;
-    }
 
     if (_showProcessing && !journey.isTerminal) {
       return Scaffold(
@@ -136,14 +137,12 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           children: [
             ResultCanvas(
               indexNumber: widget.indexNumber,
-              examType:
-                  ref.read(verificationFormProvider).examType,
+              examType: ref.read(verificationFormProvider).examType,
               examYear: ref.read(verificationFormProvider).examYear,
               candidateName: 'CANDIDATE',
               grades: const [],
               aggregate: '',
-              graceExpiresAt:
-                  DateTime.now().add(const Duration(hours: 24)),
+              graceExpiresAt: DateTime.now().add(const Duration(hours: 24)),
             ),
           ],
         ),
@@ -181,12 +180,15 @@ class ProcessingScreenSwap extends StatelessWidget {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        appBar: AppBar(title: const Text('WAEC Direct'), bottom: const TabBar(
-          tabs: [
-            Tab(icon: Icon(Icons.fact_check_outlined), text: 'Verify'),
-            Tab(icon: Icon(Icons.history), text: 'History'),
-          ],
-        )),
+        appBar: AppBar(
+          title: const Text('WAEC Direct'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.fact_check_outlined), text: 'Verify'),
+              Tab(icon: Icon(Icons.history), text: 'History'),
+            ],
+          ),
+        ),
         body: TabBarView(
           children: [
             VerificationScreen(onJourneyStart: onJourneyStart),

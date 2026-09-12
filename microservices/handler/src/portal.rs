@@ -20,6 +20,7 @@ pub trait PortalClient: Send + Sync {
         index_number: &str,
         exam_year: &str,
         voucher_pin: &str,
+        directive: &crate::proxy::EgressDirective,
     ) -> Result<PortalResponse, DomainError>;
 }
 
@@ -60,15 +61,19 @@ impl PortalClient for HttpPortal {
         index_number: &str,
         exam_year: &str,
         voucher_pin: &str,
+        directive: &crate::proxy::EgressDirective,
     ) -> Result<PortalResponse, DomainError> {
-        // The rotator is on the internal network; it applies the residential
-        // exit + fingerprint rotation and forwards to the portal.
+        // The rotator is on the internal network; it applies the
+        // directive's residential exit + TLS fingerprint and forwards to
+        // the portal (plan §4.7). Direct portal URLs are never used here.
         let url = format!("{}/fetch", self.proxy_pool_url);
         let resp = self
             .http
             .post(&url)
             .json(&serde_json::json!({
                 "target": Self::portal_url(exam),
+                "exit": directive.exit.id,
+                "tls_profile": directive.tls_profile.label(),
                 "form": {
                     "indexNumber": index_number,
                     "examYear": exam_year,
@@ -95,8 +100,19 @@ impl PortalClient for HttpPortal {
 }
 
 /// Mock portal for tests — returns canned HTML or drift fixtures.
+/// Records the directives it received so tests can assert rotation.
 pub struct MockPortal {
     pub html_for: std::collections::HashMap<ExamType, String>,
+    pub seen_directives: std::sync::Mutex<Vec<crate::proxy::EgressDirective>>,
+}
+
+impl MockPortal {
+    pub fn new(html_for: std::collections::HashMap<ExamType, String>) -> Self {
+        Self {
+            html_for,
+            seen_directives: std::sync::Mutex::new(Vec::new()),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -107,7 +123,12 @@ impl PortalClient for MockPortal {
         _index: &str,
         _year: &str,
         _pin: &str,
+        directive: &crate::proxy::EgressDirective,
     ) -> Result<PortalResponse, DomainError> {
+        self.seen_directives
+            .lock()
+            .expect("mock lock")
+            .push(directive.clone());
         self.html_for
             .get(&exam)
             .cloned()

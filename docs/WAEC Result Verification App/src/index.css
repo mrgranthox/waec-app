@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --color-ink: #0A2540;
+  --color-teal: #00D4B1;
+  --color-surface: #F8FAFC;
+  --color-border: #E2E8F0;
+  --color-muted: #64748B;
+  --color-danger: #EF4444;
+  --color-amber: #F59E0B;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: #F8FAFC;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { display: none; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

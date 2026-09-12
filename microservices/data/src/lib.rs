@@ -9,6 +9,7 @@ pub mod grace;
 pub mod idempotency;
 pub mod pg_audit;
 pub mod pricing;
+pub mod txlog;
 pub mod users;
 
 use async_trait::async_trait;
