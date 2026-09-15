@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:waec_direct/core/api_client.dart';
 import 'package:waec_direct/core/domain_types.dart';
 import 'package:waec_direct/features/verification/verification_providers.dart';
 import 'package:waec_direct/main.dart';
+
+import 'helpers/test_harness.dart';
 
 /// Offline [WaecApi] so the auth journey never touches the network.
 class _FakeWaecApi implements WaecApi {
@@ -33,15 +34,21 @@ class _FakeWaecApi implements WaecApi {
       const Stream<TransactionStage>.empty();
 }
 
-Widget _app() => ProviderScope(
-      overrides: [waecApiProvider.overrideWithValue(_FakeWaecApi())],
-      child: const WaecApp(),
-    );
+/// Boots the whole app and advances past the branded splash so the auth gate
+/// is on screen and ready for interaction.
+Future<void> _bootToAuth(WidgetTester tester) async {
+  await pumpApp(
+    tester,
+    const WaecApp(),
+    overrides: [waecApiProvider.overrideWithValue(_FakeWaecApi())],
+  );
+  await settlePastSplash(tester);
+}
 
 void main() {
   testWidgets('sign in with valid credentials navigates to the app shell',
       (tester) async {
-    await tester.pumpWidget(_app());
+    await _bootToAuth(tester);
 
     // Starts on the auth screen.
     expect(find.text('Sign in to retrieve your results'), findsOneWidget);
@@ -65,7 +72,7 @@ void main() {
 
   testWidgets('short index number is refused without leaving auth',
       (tester) async {
-    await tester.pumpWidget(_app());
+    await _bootToAuth(tester);
 
     final fields = find.byType(TextFormField);
     await tester.enterText(fields.first, '123456'); // not 10 digits
@@ -84,7 +91,7 @@ void main() {
 
   testWidgets('short password is refused without leaving auth',
       (tester) async {
-    await tester.pumpWidget(_app());
+    await _bootToAuth(tester);
 
     final fields = find.byType(TextFormField);
     await tester.enterText(fields.first, '1002330440');
@@ -101,7 +108,7 @@ void main() {
   });
 
   testWidgets('non-digit index is refused', (tester) async {
-    await tester.pumpWidget(_app());
+    await _bootToAuth(tester);
 
     final fields = find.byType(TextFormField);
     await tester.enterText(fields.first, 'abcdefghij');
