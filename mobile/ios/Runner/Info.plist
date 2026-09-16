@@ -29,6 +29,11 @@
 		<!-- Face ID usage reason (App Store requirement for biometric sign-in). -->
 		<key>NSFaceIDUsageDescription</key>
 		<string>Your fingerprint or face is used only to unlock your WAEC Direct account on this device.</string>
+		<!-- Navy status bar extends the brand colour into the system chrome. -->
+		<key>UIStatusBarColor</key>
+		<string>#0A2540</string>
+		<key>UIViewControllerBasedStatusBarAppearance</key>
+		<false/>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>

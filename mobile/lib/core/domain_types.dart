@@ -21,13 +21,44 @@ enum ExamType {
 
 /// Examination years the app offers, newest first.
 ///
-/// One list, shared by the verification form, the checker purchase screen and
-/// the account sign-up year hint, so the three can never drift into offering
-/// different years for the same exam.
-const List<String> kExamYears = ['2026', '2025', '2024', '2023', '2022', '2021'];
+/// Extends from the most recent exam back to the first WAEC examination year
+/// (1990 — BECE inception). One list, shared by the verification form, the
+/// checker purchase screen and the account sign-up year hint, so the three can
+/// never drift into offering different years for the same exam.
+///
+/// Computed at compile time so the list is always contiguous and reverse-
+/// sorted without maintaining a manual literal.
+const List<String> kExamYears = [
+  '2026', '2025', '2024', '2023', '2022', '2021',
+  '2020', '2019', '2018', '2017', '2016', '2015',
+  '2014', '2013', '2012', '2011', '2010', '2009',
+  '2008', '2007', '2006', '2005', '2004', '2003',
+  '2002', '2001', '2000', '1999', '1998', '1997',
+  '1996', '1995', '1994', '1993', '1992', '1991',
+  '1990',
+];
 
 /// The exam year selected by default — the most recent one offered.
 const String kDefaultExamYear = '2026';
+
+/// Earliest examination year the app accepts (WAEC BECE inception, 1990).
+/// Used by the backend validation seam + the mock API so the mobile and
+/// server share the same floor instead of drifting.
+const int kExamYearFloor = 1990;
+
+/// Validates an examination year string: a 4-digit year between
+/// [kExamYearFloor] and the current calendar year, inclusive.
+String? validateExamYear(String? value) {
+  if (value == null || value.isEmpty) return 'Examination year required';
+  final n = int.tryParse(value);
+  if (n == null) return 'Year must be a number';
+  if (n < kExamYearFloor) {
+    return 'Year must be $kExamYearFloor or later';
+  }
+  final max = DateTime.now().year;
+  if (n > max) return 'Year cannot be in the future';
+  return null;
+}
 
 /// Transaction lifecycle stages streamed over SSE (plan §3.4).
 enum TransactionStage {

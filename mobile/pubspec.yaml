@@ -89,6 +89,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  test: ^1.31.1
 
   # Brand asset pipeline (see plan plans/brand-icon-splash-fix.md).
   # Regenerate the launcher icon + splash screen from the clean masters in
@@ -153,12 +154,19 @@ flutter_launcher_icons:
 # glyph-only master (no wordmark) or it gets cut off.
 # ─────────────────────────────────────────────────────────────────────────────
 flutter_native_splash:
-  color: "#FFFFFF"
-  color_dark: "#FFFFFF"
+  color: "#0A2540"
+  color_dark: "#0A2540"
   image: "assets/brand/splash_logo.png"
   android_12:
     image: "assets/brand/android12_icon.png"
-    icon_background_color: "#FFFFFF"
+    icon_background_color: "#0A2540"
   android: true
   ios: true
   web: false
+  # Two-phase splash: native (this) holds the screen until Flutter paints,
+  # then BrandedSplash (lib/features/splash/branded_splash.dart) runs a second
+  # branded phase with a live progress bar + rotating status messages before the
+  # auth gate. Both phases share the navy brand background so there is no visible
+  # seam between them.
+  fill: false
+  android_gravity: center

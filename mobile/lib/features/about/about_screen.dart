@@ -134,6 +134,9 @@ class AboutScreen extends ConsumerWidget {
                     child: _BiometricToggleRow(),
                   ),
                   const SizedBox(height: WaecSpacing.md),
+                  // Account management: sign-out + future account settings.
+                  _AccountSection(),
+                  const SizedBox(height: WaecSpacing.md),
                   _Card(
                     label: 'National Office Support',
                     child: Column(
@@ -401,6 +404,113 @@ class _BiometricToggleRow extends ConsumerWidget {
                 },
         ),
       ],
+    );
+  }
+}
+
+/// Account settings: sign-out + future account management. Lives in the About
+/// & Legal tab because that is where the fingerprint toggle already is.
+class _AccountSection extends ConsumerWidget {
+  const _AccountSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final auth = ref.watch(authControllerProvider);
+    final controller = ref.read(authControllerProvider.notifier);
+    return Container(
+      padding: const EdgeInsets.all(WaecSpacing.md),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(WaecRadii.lg),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.person_outline, size: 18, color: WaecColors.navy),
+              const SizedBox(width: WaecSpacing.sm),
+              Text(
+                'Account',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: WaecColors.navy,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: WaecSpacing.md),
+          _SignOutButton(
+            signedIn: auth.isAuthenticated,
+            onSignedOut: controller.signOut,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Sign-out row: ends the session without forgetting the remembered index (next
+/// launch drops the user onto the sign-in form, not sign-up).
+class _SignOutButton extends StatelessWidget {
+  const _SignOutButton({
+    required this.signedIn,
+    required this.onSignedOut,
+  });
+
+  final bool signedIn;
+  final VoidCallback onSignedOut;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!signedIn) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            Icon(Icons.logout, size: 20, color: Color(0xFF94A3B8)),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Signed out',
+                style: TextStyle(fontSize: 14, color: Color(0xFF94A3B8)),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: onSignedOut,
+      borderRadius: BorderRadius.circular(WaecRadii.lg),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        decoration: BoxDecoration(
+          color: WaecColors.cardLight,
+          borderRadius: BorderRadius.circular(WaecRadii.lg),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.logout, size: 20, color: WaecColors.navy),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Sign out',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: WaecColors.navy,
+                ),
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 18),
+          ],
+        ),
+      ),
     );
   }
 }
