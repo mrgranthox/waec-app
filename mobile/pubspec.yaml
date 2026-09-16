@@ -57,11 +57,20 @@ dependencies:
   # Biometric login (plan §3.2)
   local_auth: ^2.3.0
 
+  # Keystore/Keychain-backed storage for the biometric-unlockable session
+  # (refresh token + identity). Never holds the password. The R8 keep-rules
+  # for this plugin already exist in android/app/proguard-rules.pro.
+  flutter_secure_storage: ^9.2.2
+
   # Export (plan §3.10)
   pdf: ^3.11.1
 
   # Runtime app metadata (version / build / bundle id) — About screen (§UX)
   package_info_plus: ^8.1.0
+
+  # Branded splash hand-off (FlutterNativeSplash.preserve/remove) so the
+  # native splash continues seamlessly into the in-app branded splash.
+  flutter_native_splash: ^2.4.0
 
   # External support links (email / maps) from the About screen
   url_launcher: ^6.3.0
@@ -81,6 +90,11 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+  # Brand asset pipeline (see plan plans/brand-icon-splash-fix.md).
+  # Regenerate the launcher icon + splash screen from the clean masters in
+  # assets/brand/ (produced by scripts/gen_brand_assets.sh).
+  flutter_launcher_icons: ^0.14.0
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
@@ -97,7 +111,54 @@ flutter:
     - assets/logo.png
     - assets/splash.png
     - assets/brand_kit.json
+    # Clean brand masters consumed by flutter_launcher_icons / flutter_native_splash
+    # and by the Flutter UI (splash + About). Produced by scripts/gen_brand_assets.sh
+    # from assets/brand_kit.json (the single source of truth).
+    - assets/brand/icon_master.png
+    - assets/brand/adaptive_foreground.png
+    - assets/brand/splash_logo.png
+    - assets/brand/logo_mark.png
+    - assets/brand/android12_icon.png
 
   # Typography — DM Sans (UI) + JetBrains Mono (index / reference numbers) are
   # loaded at runtime via the google_fonts package (see core/design_tokens.dart),
   # mirroring the Figma design's Google Fonts import. No bundled .ttf assets.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Launcher icon (flutter_launcher_icons)
+# White icon_master on a white adaptive background, with the navy/mint glyph
+# as the adaptive foreground. remove_alpha_ios avoids a transparent ring on iOS.
+# ─────────────────────────────────────────────────────────────────────────────
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/brand/icon_master.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/brand/adaptive_foreground.png"
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  web:
+    generate: false
+  windows:
+    generate: false
+    image_path: "assets/brand/icon_master.png"
+  macos:
+    generate: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Splash screen (flutter_native_splash)
+# White splash with the brand glyph + name + description + progress bar, plus
+# an Android 12+ (SplashScreen API) branded icon. NOTE: on Android 12+ the OS
+# scales and masks the icon into a CIRCLE, so `android_12.image` must be the
+# glyph-only master (no wordmark) or it gets cut off.
+# ─────────────────────────────────────────────────────────────────────────────
+flutter_native_splash:
+  color: "#FFFFFF"
+  color_dark: "#FFFFFF"
+  image: "assets/brand/splash_logo.png"
+  android_12:
+    image: "assets/brand/android12_icon.png"
+    icon_background_color: "#FFFFFF"
+  android: true
+  ios: true
+  web: false

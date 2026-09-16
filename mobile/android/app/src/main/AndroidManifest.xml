@@ -1,8 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Biometric sign-in (local_auth): required for the AndroidX biometric
+         prompt. This grants use of the platform authenticator only — it does
+         not add any elevated-risk surface. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <application
         android:label="WAEC Direct"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@mipmap/launcher_icon"
         android:usesCleartextTraffic="false"
         android:allowBackup="false"
         android:fullBackupContent="false">
