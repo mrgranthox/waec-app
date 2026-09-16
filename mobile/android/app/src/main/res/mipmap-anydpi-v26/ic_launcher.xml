@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive launcher icon (API 26+): WAEC Direct logo on navy. -->
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:color="@color/waec_navy" />
-    <foreground android:drawable="@drawable/splash_logo" />
-</adaptive-icon>

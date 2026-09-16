@@ -3,4 +3,5 @@
     <!-- WAEC Direct brand navy (design tokens: WaecColors.navy) -->
     <color name="waec_navy">#0A2540</color>
     <color name="waec_teal">#00D4B1</color>
+	<color name="ic_launcher_background">#FFFFFF</color>
 </resources>
