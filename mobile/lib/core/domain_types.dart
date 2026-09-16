@@ -7,7 +7,27 @@ enum ExamType {
   const ExamType(this.code, this.displayName);
   final String code;
   final String displayName;
+
+  /// Wire-code parser.
+  ///
+  /// An unknown code degrades to [ExamType.bece] rather than throwing: a
+  /// checker written by a newer build must not make an older build crash when
+  /// the History tab lists the vault.
+  static ExamType fromCode(String? code) => values.firstWhere(
+    (e) => e.code == code,
+    orElse: () => ExamType.bece,
+  );
 }
+
+/// Examination years the app offers, newest first.
+///
+/// One list, shared by the verification form, the checker purchase screen and
+/// the account sign-up year hint, so the three can never drift into offering
+/// different years for the same exam.
+const List<String> kExamYears = ['2026', '2025', '2024', '2023', '2022', '2021'];
+
+/// The exam year selected by default — the most recent one offered.
+const String kDefaultExamYear = '2026';
 
 /// Transaction lifecycle stages streamed over SSE (plan §3.4).
 enum TransactionStage {
@@ -175,4 +195,164 @@ class AuthSession {
   String toString() =>
       'AuthSession(index: $indexNumber, source: ${source.name}, '
       'biometric: $biometricEnabled)';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Result checkers (ADR-001: on-device encrypted vault)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lifecycle of a purchased WAEC result checker.
+enum CheckerStatus {
+  /// Bought and never spent — carries a usable serial + PIN.
+  unused('Unused'),
+
+  /// The serial + PIN have been consumed against the WAEC portal.
+  redeemed('Used'),
+
+  /// Past the validity window the backend attached at purchase.
+  expired('Expired');
+
+  const CheckerStatus(this.displayName);
+  final String displayName;
+
+  /// A checker is single-use: only [unused] may be spent.
+  bool get isRedeemable => this == CheckerStatus.unused;
+
+  /// Tolerant parser for the value stored in the vault's plaintext status
+  /// column. An unrecognised value reads as [expired] — the safe direction,
+  /// because it withholds a possibly-spent credential rather than offering it.
+  static CheckerStatus fromWire(String? value) => switch (value) {
+    'unused' => CheckerStatus.unused,
+    'redeemed' => CheckerStatus.redeemed,
+    _ => CheckerStatus.expired,
+  };
+}
+
+/// Result-checker credential rules.
+///
+/// A WAEC result checker is printed as a SERIAL + PIN pair drawn from an
+/// uppercase alphanumeric alphabet. The bounds are deliberately generous (the
+/// WAEC portal, not the client, is the authority on whether a given checker is
+/// valid) while still rejecting the empty, whitespace-only or pasted-with-emoji
+/// input a keyboard can produce — so the user gets a clear inline error instead
+/// of a round trip that could burn a real credential.
+class CheckerValidator {
+  static final RegExp _serial = RegExp(r'^[A-Za-z0-9]{8,24}$');
+  static final RegExp _pin = RegExp(r'^[A-Za-z0-9]{8,24}$');
+
+  /// Uppercase and strip the separators a user may paste from a scratch card
+  /// ("WAE 1234-5678" -> "WAE12345678"): normalising beats rejecting.
+  static String normalise(String value) =>
+      value.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
+
+  static bool isValidSerial(String value) => _serial.hasMatch(normalise(value));
+
+  static bool isValidPin(String value) => _pin.hasMatch(normalise(value));
+
+  static String? validateSerial(String? value) {
+    if (value == null || value.trim().isEmpty) return 'Checker serial required';
+    if (!isValidSerial(value)) return 'Serial must be 8-24 letters or digits';
+    return null;
+  }
+
+  static String? validatePin(String? value) {
+    if (value == null || value.trim().isEmpty) return 'Checker PIN required';
+    if (!isValidPin(value)) return 'PIN must be 8-24 letters or digits';
+    return null;
+  }
+
+  /// Display form of a serial: everything but the last [visible] characters
+  /// masked. The History card shows this, so the full credential is never on
+  /// screen — and therefore never in a screenshot or a shoulder-surf.
+  static String maskSerial(String serial, {int visible = 4}) {
+    final s = normalise(serial);
+    if (s.length <= visible) return '\u2022' * s.length;
+    return '${'\u2022' * (s.length - visible)}'
+        '${s.substring(s.length - visible)}';
+  }
+}
+
+/// A purchased WAEC result checker.
+///
+/// **Hard Rule 1 / ADR-001.** [serial] and [pin] *are* the credential. They are
+/// held only inside the AES-256-GCM blob of the on-device vault
+/// (`core/storage/encrypted_archive.dart`) and must never be logged, traced,
+/// reported to analytics, or written to any other store.
+///
+/// [toString] is deliberately credential-free, so an accidental
+/// `print(checker)` or a debugger expansion cannot leak one. Do not add the
+/// serial or PIN to it.
+class Checker {
+  const Checker({
+    required this.id,
+    required this.serial,
+    required this.pin,
+    required this.examType,
+    required this.examYear,
+    required this.status,
+    required this.purchasedAtUnix,
+    this.redeemedAtUnix,
+    this.expiresAtUnix,
+    this.transactionId = '',
+  });
+
+  /// Vault row id (a UUIDv4 minted at purchase). Safe to log.
+  final String id;
+
+  /// The credential's serial. Never log or render in full.
+  final String serial;
+
+  /// The credential's PIN. Never log or render in full.
+  final String pin;
+
+  /// Wire code of the exam this checker covers (`ExamType.code`). Kept as a
+  /// string so an unknown code from a newer build survives a vault round trip
+  /// unchanged instead of being coerced into a known enum member.
+  final String examType;
+
+  /// Exam year this checker covers.
+  final String examYear;
+
+  final CheckerStatus status;
+
+  final int purchasedAtUnix;
+
+  /// Set once the redemption journey reached terminal success.
+  final int? redeemedAtUnix;
+
+  /// Backend-attached validity deadline, when it supplies one.
+  final int? expiresAtUnix;
+
+  /// Payment transaction that provisioned this checker.
+  final String transactionId;
+
+  /// Whether the redemption flow may spend this checker.
+  bool get isRedeemable => status.isRedeemable;
+
+  /// Safe-to-render serial (last 4 characters visible).
+  String get maskedSerial => CheckerValidator.maskSerial(serial);
+
+  /// True when the checker has outlived its own deadline — the vault can hold
+  /// a stale `unused` row if the backend never flipped the status.
+  bool isExpiredAt(int nowUnix) =>
+      status == CheckerStatus.expired ||
+      (expiresAtUnix != null && nowUnix >= expiresAtUnix!);
+
+  Checker copyWith({CheckerStatus? status, int? redeemedAtUnix}) => Checker(
+    id: id,
+    serial: serial,
+    pin: pin,
+    examType: examType,
+    examYear: examYear,
+    status: status ?? this.status,
+    purchasedAtUnix: purchasedAtUnix,
+    redeemedAtUnix: redeemedAtUnix ?? this.redeemedAtUnix,
+    expiresAtUnix: expiresAtUnix,
+    transactionId: transactionId,
+  );
+
+  /// Credential-free by design — see the class documentation.
+  @override
+  String toString() =>
+      'Checker(id: $id, exam: $examType $examYear, status: ${status.name})';
 }

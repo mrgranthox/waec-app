@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:sqflite/sqflite.dart';
+
+import '../domain_types.dart';
 
 /// Encrypted local result archive — plan §3.7.
 ///
@@ -21,13 +24,18 @@ class EncryptedResultArchive {
   final List<int> _keySeed;
 
   static const _table = 'snapshots';
+  static const _checkers = 'checkers';
   static const _meta = 'meta';
+
+  /// Schema 2 added the checker vault (ADR-001). Never reuse a version number:
+  /// an existing install must run `onUpgrade` so its snapshot history survives.
+  static const _schemaVersion = 2;
 
   /// Open (or create) the archive at [dbPath].
   static Future<EncryptedResultArchive> open(String dbPath) async {
     final db = await openDatabase(
       dbPath,
-      version: 1,
+      version: _schemaVersion,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE $_meta (
@@ -44,16 +52,53 @@ class EncryptedResultArchive {
           )''');
         await db.execute(
             'CREATE INDEX idx_snap_idx ON $_table(index_number, created_unix DESC)');
+        await _createCheckerTable(db);
         // Device-random salt for key derivation — never leaves the device.
         final rng = Random.secure();
         final salt = List<int>.generate(32, (_) => rng.nextInt(256));
         await db.insert(_meta, {'k': 'salt', 'v': base64Encode(salt)});
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // v1 -> v2: the checker vault lands. Snapshot rows are untouched (the
+        // key derivation and envelope are unchanged), so upgrading never costs
+        // the user their saved history.
+        if (oldVersion < 2) await _createCheckerTable(db);
+      },
     );
+
+    // Overwrite deleted content with zeros instead of orphaning it in free
+    // pages, so `deleteChecker`'s zero-out is durable on disk rather than only
+    // logical (ADR-001). Set before the first write so every later DELETE
+    // benefits.
+    await db.execute('PRAGMA secure_delete = ON');
 
     final rows = await db.query(_meta, where: 'k = ?', whereArgs: ['salt']);
     final salt = base64Decode(rows.first['v'] as String);
     return EncryptedResultArchive._(db, salt);
+  }
+
+  /// The checker vault (ADR-001).
+  ///
+  /// Note which columns are plaintext: row id, account, exam, status and
+  /// timestamps. None of them is the credential, so rendering the History list
+  /// needs no key material at all. `blob` is the only column that carries the
+  /// serial + PIN, encrypted with the same index-bound AES-256-GCM envelope as
+  /// a result snapshot.
+  static Future<void> _createCheckerTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE $_checkers (
+        id TEXT PRIMARY KEY,
+        index_number TEXT NOT NULL,
+        exam_type TEXT NOT NULL,
+        exam_year TEXT NOT NULL,
+        status TEXT NOT NULL,
+        purchased_unix INTEGER NOT NULL,
+        redeemed_unix INTEGER,
+        expires_unix INTEGER,
+        blob BLOB NOT NULL
+      )''');
+    await db.execute(
+        'CREATE INDEX idx_checker_idx ON $_checkers(index_number, purchased_unix DESC)');
   }
 
   /// Derive the AES key: SHA-256(seed || index) — binds the key to the
@@ -111,7 +156,9 @@ class EncryptedResultArchive {
       'exam_type': examType,
       'exam_year': examYear,
       'created_unix': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      'blob': blob,
+      // BLOB arguments must be typed bytes: a bare List<int> is rejected by
+      // the SQLite layer ("Invalid sql argument type 'List<int>'").
+      'blob': Uint8List.fromList(blob),
     });
     return id;
   }
@@ -127,6 +174,176 @@ class EncryptedResultArchive {
     return jsonDecode(_decrypt(indexNumber, rows.first['blob'] as List<int>))
         as Map<String, dynamic>;
   }
+
+  // ── Checker vault (ADR-001) ───────────────────────────────────────────────
+
+  /// Persist a purchased checker, encrypted-at-rest.
+  ///
+  /// [serial] and [pin] are written **only** into the encrypted blob — never
+  /// into a column, a log, or an error string (Hard Rule 1). Re-saving the same
+  /// [id] replaces the row, which is what makes the purchase flow idempotent: a
+  /// retried callback for one payment updates rather than duplicates the
+  /// checker.
+  Future<String> saveChecker({
+    required String id,
+    required String indexNumber,
+    required String serial,
+    required String pin,
+    required String examType,
+    required String examYear,
+    required int purchasedAtUnix,
+    String transactionId = '',
+    int? expiresAtUnix,
+  }) async {
+    final blob = _encrypt(
+      indexNumber,
+      jsonEncode(<String, dynamic>{
+        'serial': serial,
+        'pin': pin,
+        'transaction_id': transactionId,
+      }),
+    );
+    await _db.insert(
+      _checkers,
+      <String, Object?>{
+        'id': id,
+        'index_number': indexNumber,
+        'exam_type': examType,
+        'exam_year': examYear,
+        'status': CheckerStatus.unused.name,
+        'purchased_unix': purchasedAtUnix,
+        'redeemed_unix': null,
+        'expires_unix': expiresAtUnix,
+        'blob': Uint8List.fromList(blob),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return id;
+  }
+
+  /// One checker, decrypted — or null when the id does not belong to
+  /// [indexNumber]. A cross-account id must read as *absent*, not as an error,
+  /// so one candidate can never probe another's vault.
+  Future<Checker?> loadChecker({
+    required String id,
+    required String indexNumber,
+  }) async {
+    final rows = await _db.query(_checkers,
+        where: 'id = ? AND index_number = ?', whereArgs: [id, indexNumber]);
+    if (rows.isEmpty) return null;
+    return _checkerFromRow(rows.first, indexNumber);
+  }
+
+  /// All checkers for [indexNumber], newest purchase first.
+  Future<List<Checker>> listCheckers(String indexNumber) async {
+    final rows = await _db.query(_checkers,
+        where: 'index_number = ?',
+        whereArgs: [indexNumber],
+        orderBy: 'purchased_unix DESC');
+    return rows.map((r) => _checkerFromRow(r, indexNumber)).toList();
+  }
+
+  /// Mark a checker as spent.
+  ///
+  /// Called only after the redemption journey reached terminal success, so a
+  /// failed attempt leaves the credential available for another try rather than
+  /// burning a checker the user paid for.
+  Future<void> markCheckerRedeemed({
+    required String id,
+    required String indexNumber,
+    required int redeemedAtUnix,
+  }) async {
+    final updated = await _db.update(
+      _checkers,
+      <String, Object?>{
+        'status': CheckerStatus.redeemed.name,
+        'redeemed_unix': redeemedAtUnix,
+      },
+      where: 'id = ? AND index_number = ?',
+      whereArgs: [id, indexNumber],
+    );
+    if (updated == 0) {
+      throw StateError('checker not found for this account');
+    }
+  }
+
+  /// Irreversible user-initiated delete (plan §3.6) carrying the ADR-001
+  /// zero-out: the ciphertext is overwritten with fresh random bytes *before*
+  /// the row is dropped, and `PRAGMA secure_delete` clears the freed page, so
+  /// the credential is not recoverable from SQLite free pages or WAL remnants.
+  Future<void> deleteChecker({
+    required String id,
+    required String indexNumber,
+  }) async {
+    final rows = await _db.query(_checkers,
+        columns: ['blob'],
+        where: 'id = ? AND index_number = ?',
+        whereArgs: [id, indexNumber]);
+    if (rows.isNotEmpty) {
+      final length = (rows.first['blob'] as List).length;
+      await _db.update(
+        _checkers,
+        <String, Object?>{
+          'blob': Uint8List.fromList(_randomBytes(length)),
+        },
+        where: 'id = ? AND index_number = ?',
+        whereArgs: [id, indexNumber],
+      );
+    }
+    await _db.delete(_checkers,
+        where: 'id = ? AND index_number = ?', whereArgs: [id, indexNumber]);
+  }
+
+  /// Decrypt and shape one checker row.
+  ///
+  /// A failed tag check raises [ArchiveIntegrityException] rather than being
+  /// skipped: a vault whose ciphertext was edited under the app's feet is a
+  /// security event the user has to see, not a silently shorter list.
+  Checker _checkerFromRow(Map<String, Object?> row, String indexNumber) {
+    final Map<String, dynamic> secret;
+    try {
+      secret = jsonDecode(
+        _decrypt(indexNumber, (row['blob'] as List).cast<int>()),
+      ) as Map<String, dynamic>;
+    } on StateError {
+      throw const ArchiveIntegrityException(
+          'checker vault failed its integrity check');
+    } on FormatException {
+      throw const ArchiveIntegrityException(
+          'checker vault could not be decoded');
+    }
+    return Checker(
+      id: row['id'] as String,
+      serial: secret['serial'] as String? ?? '',
+      pin: secret['pin'] as String? ?? '',
+      examType: row['exam_type'] as String,
+      examYear: row['exam_year'] as String,
+      status: CheckerStatus.fromWire(row['status'] as String?),
+      purchasedAtUnix: row['purchased_unix'] as int,
+      redeemedAtUnix: row['redeemed_unix'] as int?,
+      expiresAtUnix: row['expires_unix'] as int?,
+      transactionId: secret['transaction_id'] as String? ?? '',
+    );
+  }
+
+  /// Cryptographically-random filler for the zero-out overwrite.
+  static List<int> _randomBytes(int length) {
+    final rng = Random.secure();
+    return List<int>.generate(length, (_) => rng.nextInt(256));
+  }
+}
+
+/// Raised when a vault row fails its AES-GCM tag check.
+///
+/// Surfaces to the user instead of being swallowed: ciphertext that changed
+/// under the app means either storage corruption or tampering, and either way a
+/// checker must not be silently dropped from the list.
+class ArchiveIntegrityException implements Exception {
+  const ArchiveIntegrityException(this.message);
+  final String message;
+
+  @override
+  String toString() => 'ArchiveIntegrityException($message)';
 }
 
 /// History-screen metadata (never decrypted).
@@ -146,27 +363,33 @@ class ArchiveMeta {
 
 extension EncryptedArchiveQueries on EncryptedResultArchive {
   /// List metadata (no decryption needed for the history screen).
+  ///
+  /// Reads `_db` directly — this extension is in the same library, so the old
+  /// `as dynamic` cast was never needed, and it was actively harmful: it made
+  /// `rows` dynamic, which collapsed the reified list type to `List<dynamic>`
+  /// and blew up with a subtype error at the call site.
   Future<List<ArchiveMeta>> listSnapshots(String indexNumber) async {
-    final rows = await (this as dynamic)._db.query(
-          'snapshots',
-          where: 'index_number = ?',
-          whereArgs: [indexNumber],
-          orderBy: 'created_unix DESC',
-        );
+    final rows = await _db.query(
+      'snapshots',
+      where: 'index_number = ?',
+      whereArgs: [indexNumber],
+      orderBy: 'created_unix DESC',
+    );
     return rows
-        .map((r) => ArchiveMeta(
-              id: r['id'] as String,
-              examType: r['exam_type'] as String,
-              examYear: r['exam_year'] as String,
-              createdUnix: r['created_unix'] as int,
-            ))
+        .map(
+          (Map<String, Object?> r) => ArchiveMeta(
+            id: r['id'] as String,
+            examType: r['exam_type'] as String,
+            examYear: r['exam_year'] as String,
+            createdUnix: r['created_unix'] as int,
+          ),
+        )
         .toList();
   }
 
   /// User-initiated irreversible delete (plan §3.6).
   Future<void> deleteSnapshot(String id) async {
-    await (this as dynamic)._db
-        .delete('snapshots', where: 'id = ?', whereArgs: [id]);
+    await _db.delete('snapshots', where: 'id = ?', whereArgs: [id]);
   }
 }
 

@@ -22,7 +22,9 @@ void main() {
 
     await settlePastSplash(tester);
 
-    // After the minimum display elapses the auth gate takes over.
-    expect(find.text('Sign in to retrieve your results'), findsOneWidget);
+    // After the minimum display elapses the auth gate takes over. The
+    // first-run gate is sign-up (requirement #3): registration precedes
+    // sign-in on a device with no stored account.
+    expect(find.text('Create your account'), findsOneWidget);
   });
 }

@@ -135,12 +135,74 @@ class JourneyNotifier extends StateNotifier<JourneyState> {
     state = const JourneyState();
   }
 
+  /// Begin a *checker redemption* journey (ADR-001): spend a serial + PIN the
+  /// user already owns instead of buying a new result.
+  ///
+  /// Shares [journeyProvider] with [start], so the existing ProcessingScreen
+  /// overlay renders progress identically on both paths. Resolves with the
+  /// terminal stage so the caller can drive its own follow-up UI — the purchase
+  /// flow uses that to decide whether to mark the checker spent.
+  ///
+  /// The serial and PIN are read from the encrypted vault by the caller and are
+  /// never placed in JourneyState nor in an error message (Hard Rule 1).
+  Future<TransactionStage> redeemChecker({
+    required String serial,
+    required String pin,
+    required String indexNumber,
+    required ExamType examType,
+    required String examYear,
+  }) async {
+    // One key per logical redemption, reused by every retry of the portal call
+    // (plan §3.9 / §4.9) — a flaky network must not spend the checker twice.
+    final key = IdempotencyKeys.create();
+    try {
+      final redemption = await _api.redeemChecker(
+        idempotencyKey: key,
+        serial: serial,
+        pin: pin,
+        indexNumber: indexNumber,
+        examType: examType,
+        examYear: examYear,
+      );
+      state = JourneyState(transactionId: redemption.transactionId);
+      // Consumed directly rather than through [_sub]: the loop is bounded by a
+      // terminal stage, so there is no long-lived subscription left dangling.
+      var last = TransactionStage.waecRetrieval;
+      final stream = _api.transactionStages(redemption.transactionId);
+      await for (final stage in stream) {
+        last = stage;
+        state = JourneyState(
+          transactionId: redemption.transactionId,
+          stages: [...state.stages, stage],
+          current: stage,
+        );
+        if (stage.isTerminal) break;
+      }
+      return last;
+    } catch (e) {
+      state = JourneyState(
+        current: TransactionStage.failed,
+        error: describeCheckerError(e),
+      );
+      return TransactionStage.failed;
+    }
+  }
+
   @override
   void dispose() {
     _sub?.cancel();
     super.dispose();
   }
 }
+
+/// Human-readable failure text that cannot leak implementation detail.
+///
+/// Only a [CheckerException]'s curated, credential-free message is shown;
+/// anything else falls back to a fixed string, so no transport error can echo a
+/// serial, a PIN or an internal URL into the UI (Hard Rule 1).
+String describeCheckerError(Object error) => error is CheckerException
+    ? error.message
+    : 'Something went wrong. Please try again.';
 
 final journeyProvider =
     StateNotifierProvider<JourneyNotifier, JourneyState>((ref) {

@@ -61,6 +61,23 @@ abstract class WaecApi {
     required String accessToken,
     required String platformPublicKey,
   });
+
+  // ── Checker redemption (ADR-001) ─────────────────────────────────────────
+
+  /// Spends a purchased checker against the WAEC portal and returns the
+  /// transaction whose stage stream carries the retrieval to completion.
+  ///
+  /// Maps onto the Handler service's `FetchResult` RPC, which takes the voucher
+  /// serial + PIN (microservices/proto/waec/handler/v1/handler.proto). Both are
+  /// passed straight through and never logged (Hard Rule 1).
+  Future<CheckerRedemption> redeemChecker({
+    required String idempotencyKey,
+    required String serial,
+    required String pin,
+    required String indexNumber,
+    required ExamType examType,
+    required String examYear,
+  });
 }
 
 /// Why an auth call failed.
@@ -114,6 +131,39 @@ class AuthException implements Exception {
   String toString() => 'AuthException(${kind.name})';
 }
 
+/// Why a checker redemption failed.
+enum CheckerFailureKind {
+  /// The portal rejected the serial + PIN pair (already used, void, or
+  /// mistyped). The credential is suspect, so the UI must offer a re-check
+  /// rather than silently retrying and burning it.
+  checkerRejected,
+
+  /// The retrieval could not be started at all.
+  unreachable,
+
+  /// Anything else.
+  unknown;
+
+  bool get isNetworkFailure => this == CheckerFailureKind.unreachable;
+}
+
+/// Typed redemption error.
+///
+/// [message] is user-presentable and carries no credential, and [toString] is
+/// narrower still (kind only), so a stray `print(e)` or a crash report cannot
+/// leak a serial or PIN (Hard Rule 1).
+class CheckerException implements Exception {
+  const CheckerException(this.kind, this.message);
+
+  final CheckerFailureKind kind;
+  final String message;
+
+  bool get isNetworkFailure => kind.isNetworkFailure;
+
+  @override
+  String toString() => 'CheckerException(${kind.name})';
+}
+
 /// Static SHA-256 certificate pins (plan §3.9: pinning compiled into
 /// binary; rotation via app release).
 class CertPins {
@@ -135,6 +185,8 @@ class ChargeInit {
     required this.amountPesewas,
     required this.checkoutUrl,
     required this.displayMessage,
+    this.checkerSerial = '',
+    this.checkerPin = '',
   });
 
   final String transactionId;
@@ -142,6 +194,44 @@ class ChargeInit {
   final int amountPesewas;
   final String checkoutUrl;
   final String displayMessage;
+
+  /// The voucher serial provisioned for this charge, when the payment service
+  /// returns one.
+  ///
+  /// A checker purchase is the one flow where the charge response itself
+  /// carries the credential: the candidate has paid for a voucher, and this is
+  /// the only moment the client can learn it. Empty for a plain result charge,
+  /// where the voucher is provisioned server-side and never leaves it.
+  ///
+  /// Never log or render this (Hard Rule 1).
+  final String checkerSerial;
+
+  /// The voucher PIN provisioned for this charge. See [checkerSerial].
+  final String checkerPin;
+
+  /// Whether this charge returned a complete credential the vault can hold.
+  bool get hasChecker => checkerSerial.isNotEmpty && checkerPin.isNotEmpty;
+}
+
+/// Result of starting a checker redemption (Handler service `FetchResult`).
+///
+/// The serial + PIN that produced this are consumed upstream and deliberately
+/// absent from the payload, so nothing here can leak one (Hard Rule 1).
+class CheckerRedemption {
+  const CheckerRedemption({
+    required this.transactionId,
+    required this.status,
+    required this.displayMessage,
+  });
+
+  final String transactionId;
+
+  /// pending | success | failed
+  final String status;
+  final String displayMessage;
+
+  /// Whether the portal accepted the credential and a retrieval is running.
+  bool get isAccepted => status != 'failed';
 }
 
 /// Price from the backend config endpoint (dynamic GHS, plan §2.2).
@@ -238,8 +328,50 @@ class HttpWaecApi implements WaecApi {
         amountPesewas: (value['amount_pesewas'] as num?)?.toInt() ?? 0,
         checkoutUrl: value['checkout_url'] as String? ?? '',
         displayMessage: value['display_message'] as String? ?? '',
+        checkerSerial: value['checker_serial'] as String? ?? '',
+        checkerPin: value['checker_pin'] as String? ?? '',
       ),
       RetryExhausted(:final lastError) => throw lastError,
+    };
+  }
+
+  @override
+  Future<CheckerRedemption> redeemChecker({
+    required String idempotencyKey,
+    required String serial,
+    required String pin,
+    required String indexNumber,
+    required ExamType examType,
+    required String examYear,
+  }) async {
+    final result = await retryWithBackoff<Map<String, dynamic>>(
+      () async {
+        final resp = await _dio.post<Map<String, dynamic>>(
+          '/v1/handler/fetch-result',
+          options: Options(headers: {'X-Idempotency-Key': idempotencyKey}),
+          data: <String, dynamic>{
+            'index_number': indexNumber,
+            'exam_type': examType.code,
+            'exam_year': examYear,
+            'voucher_serial': serial,
+            'voucher_pin': pin,
+          },
+        );
+        return resp.data ?? <String, dynamic>{};
+      },
+      // Only a request that never reached the portal may be retried. A checker
+      // is single-use: re-sending one that *did* reach WAEC could spend the
+      // credential on a retrieval the user never sees, so a received 4xx/5xx
+      // fails fast and surfaces the real reason.
+      isRetryable: isTransientNetworkError,
+    );
+    return switch (result) {
+      RetrySuccess(:final value) => CheckerRedemption(
+        transactionId: value['transaction_id'] as String? ?? '',
+        status: value['status'] as String? ?? 'pending',
+        displayMessage: value['display_message'] as String? ?? '',
+      ),
+      RetryExhausted(:final lastError) => throw mapCheckerError(lastError),
     };
   }
 
@@ -723,6 +855,60 @@ AuthException mapAuthError(Object error) {
   );
 }
 
+/// Translates a transport failure during a checker redemption into a typed,
+/// user-presentable [CheckerException].
+///
+/// Like [mapAuthError] the message is always a fixed local string — which
+/// matters more here than anywhere else: the request body carries a live
+/// credential, and echoing server text back could reproduce it on screen.
+CheckerException mapCheckerError(Object error) {
+  if (error is CheckerException) return error;
+  if (error is! DioException) {
+    return const CheckerException(
+      CheckerFailureKind.unknown,
+      'Could not check your result. Please try again.',
+    );
+  }
+
+  final response = error.response;
+  // No response at all: DNS, TLS, captive portal, offline, timeout.
+  if (response == null) {
+    return const CheckerException(
+      CheckerFailureKind.unreachable,
+      'Cannot reach the WAEC gateway. Check your connection and try again.',
+    );
+  }
+
+  final status = response.statusCode ?? 0;
+  if (status >= 500) {
+    return const CheckerException(
+      CheckerFailureKind.unreachable,
+      'The WAEC gateway is unavailable right now. Please try again shortly.',
+    );
+  }
+
+  final haystack = _wireHaystack(response.data).toUpperCase();
+  // A spent or void voucher is terminal: WAEC has already consumed it. The
+  // credential stays in the vault so the user can see what happened and take it
+  // up with support, instead of being deleted as though it had been mistyped.
+  if (haystack.contains('VOUCHER_ALREADY_USED') ||
+      haystack.contains('CHECKER_ALREADY_USED') ||
+      haystack.contains('VOUCHER_INVALID') ||
+      haystack.contains('CHECKER_INVALID') ||
+      status == 409 ||
+      status == 410) {
+    return const CheckerException(
+      CheckerFailureKind.checkerRejected,
+      'WAEC rejected this checker. It may already have been used — '
+      'contact support with your payment reference.',
+    );
+  }
+  return const CheckerException(
+    CheckerFailureKind.unknown,
+    'Could not check your result. Please try again.',
+  );
+}
+///
 /// Flattens a response body into one searchable string.
 ///
 /// `Map.toString()` keeps every key and value intact, which is enough to find a
@@ -770,6 +956,24 @@ class MockWaecApi implements WaecApi {
   /// Number of [bindBiometric] calls (count only — never the key material).
   int bindBiometricCalls = 0;
 
+  // ─ Checker simulation knobs ────────────────────────────────────────────
+
+  /// Idempotency keys presented to [redeemChecker]. Random UUIDs, so safe to
+  /// assert on; captured to prove the key is stable across retries.
+  final List<String> redemptions = <String>[];
+
+  /// Serials presented to [redeemChecker], in call order. Lets a test prove the
+  /// credential that reached the portal came from the vault.
+  final List<String> redeemedSerials = <String>[];
+
+  /// When true, [redeemChecker] throws as the portal does for a checker that
+  /// was already spent, or that does not exist.
+  bool redemptionRejects = false;
+
+  /// When true, [redeemChecker] throws as an unreachable gateway does, which is
+  /// the only case the client may treat as retryable.
+  bool redemptionUnreachable = false;
+
   /// The password this mock accepts. A constant so no credential is stored.
   static const String acceptedPassword = 'password123';
 
@@ -781,12 +985,55 @@ class MockWaecApi implements WaecApi {
     required String examYear,
   }) async {
     charges.add(idempotencyKey);
+    final n = charges.length;
     return ChargeInit(
-      transactionId: 'tx-${charges.length}',
+      transactionId: 'tx-$n',
       status: 'pending',
       amountPesewas: price.amountPesewas,
       checkoutUrl: 'https://mock/pay',
       displayMessage: 'Approve on your phone',
+      // A real charge response carries the provisioned voucher once payment
+      // settles. The mock fabricates a valid-format pair so the vault and the
+      // redemption journey can be exercised end to end.
+      checkerSerial: 'WAECMOCK${n.toString().padLeft(4, '0')}',
+      checkerPin: 'PIN${n.toString().padLeft(7, '0')}',
+    );
+  }
+
+  @override
+  Future<CheckerRedemption> redeemChecker({
+    required String idempotencyKey,
+    required String serial,
+    required String pin,
+    required String indexNumber,
+    required ExamType examType,
+    required String examYear,
+  }) async {
+    redemptions.add(idempotencyKey);
+    redeemedSerials.add(serial);
+    if (redemptionUnreachable) {
+      throw const CheckerException(
+        CheckerFailureKind.unreachable,
+        'Cannot reach the WAEC gateway. Check your connection and try again.',
+      );
+    }
+    if (redemptionRejects) {
+      throw const CheckerException(
+        CheckerFailureKind.checkerRejected,
+        'WAEC rejected this checker. It may already have been used.',
+      );
+    }
+    if (!CheckerValidator.isValidSerial(serial) ||
+        !CheckerValidator.isValidPin(pin)) {
+      throw const CheckerException(
+        CheckerFailureKind.checkerRejected,
+        'WAEC rejected this checker. It may already have been used.',
+      );
+    }
+    return CheckerRedemption(
+      transactionId: 'tx-redeem-${redemptions.length}',
+      status: 'pending',
+      displayMessage: 'Checking your result',
     );
   }
 

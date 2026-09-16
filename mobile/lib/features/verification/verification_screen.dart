@@ -18,17 +18,21 @@ class VerificationScreen extends ConsumerWidget {
     super.key,
     required this.onJourneyStart,
     required this.indexNumber,
+    this.onBack,
   });
 
   final void Function() onJourneyStart;
   final String indexNumber;
 
-  static const _examYears = ['2026', '2025', '2024', '2023', '2022', '2021'];
+  /// Returns to the Home hub. Null when this screen is the tab root (no hub to
+  /// go back to), in which case no close affordance is rendered.
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final form = ref.watch(verificationFormProvider);
     final priceAsync = ref.watch(priceProvider(form.examType));
+    final back = onBack;
 
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
@@ -42,7 +46,22 @@ class VerificationScreen extends ConsumerWidget {
               eyebrow: 'Active Session',
               title: indexNumber,
               titleIsMono: true,
-              trailing: const WaecAuthPill(),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const WaecAuthPill(),
+                  if (back != null)
+                    IconButton(
+                      tooltip: 'Back',
+                      onPressed: back,
+                      icon: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                ],
+              ),
             ),
             Expanded(
               child: ListView(
@@ -215,7 +234,7 @@ class VerificationScreen extends ConsumerWidget {
           const SizedBox(height: 8),
           _DropdownBox<String>(
             value: form.examYear,
-            items: {for (final y in _examYears) y: y},
+            items: {for (final y in kExamYears) y: y},
             onChanged: ref.read(verificationFormProvider.notifier).setYear,
           ),
         ],

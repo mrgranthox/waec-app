@@ -62,8 +62,8 @@ void main() {
     // Requirement #3: with no account known on the device, registration is
     // the first screen — sign-in is only reachable through the link below.
     expect(find.text('Create your account'), findsOneWidget);
-    expect(find.text('Sign in to retrieve your results'), findsNothing);
-    expect(find.text('Verify Results'), findsNothing);
+        expect(find.text('Sign in to retrieve your results'), findsNothing);
+    expect(find.text('Home'), findsNothing);
   });
 
   testWidgets('sign-up without consent is blocked before registration',
@@ -119,11 +119,11 @@ void main() {
     await tester.tap(create, warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    // The registered session is live immediately. The harness fake reports an
+        // The registered session is live immediately. The harness fake reports an
     // unsupported biometric device, so enrollment is skipped and the gate
     // hands straight to the shell.
     expect(find.text('Create your account'), findsNothing);
-    expect(find.text('Verify Results'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
   });
 
   testWidgets('sign in with valid credentials navigates to the app shell',
@@ -141,10 +141,10 @@ void main() {
     await tester.tap(signIn, warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    // Regression guard: the button previously called a no-op callback,
+        // Regression guard: the button previously called a no-op callback,
     // so the auth screen stayed mounted forever.
     expect(find.text('Sign in to retrieve your results'), findsNothing);
-    expect(find.text('Verify Results'), findsOneWidget);
+    expect(find.text('Home'), findsOneWidget);
   });
 
   testWidgets('short index number is refused without leaving auth',
@@ -162,9 +162,9 @@ void main() {
     await tester.tap(signIn, warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    expect(find.text('Must be exactly 10 digits'), findsOneWidget);
+        expect(find.text('Must be exactly 10 digits'), findsOneWidget);
     expect(find.text('Sign in to retrieve your results'), findsOneWidget);
-    expect(find.text('Verify Results'), findsNothing);
+    expect(find.text('Home'), findsNothing);
   });
 
   testWidgets('short password is refused without leaving auth',
@@ -182,8 +182,8 @@ void main() {
     await tester.tap(signIn, warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    expect(find.text('Password must be at least 8 characters'), findsOneWidget);
-    expect(find.text('Verify Results'), findsNothing);
+        expect(find.text('Password must be at least 8 characters'), findsOneWidget);
+    expect(find.text('Home'), findsNothing);
   });
 
   testWidgets('non-digit index is refused', (tester) async {
@@ -200,7 +200,7 @@ void main() {
     await tester.tap(signIn, warnIfMissed: false);
     await tester.pumpAndSettle();
 
-    expect(find.text('Must be exactly 10 digits'), findsOneWidget);
-    expect(find.text('Verify Results'), findsNothing);
+        expect(find.text('Must be exactly 10 digits'), findsOneWidget);
+    expect(find.text('Home'), findsNothing);
   });
 }

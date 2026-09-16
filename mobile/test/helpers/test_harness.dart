@@ -12,8 +12,72 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:local_auth/local_auth.dart' show BiometricType;
 
 import 'package:waec_direct/core/brand.dart';
+import 'package:waec_direct/core/security/biometric_service.dart';
+import 'package:waec_direct/core/security/session_store.dart';
+import 'package:waec_direct/core/storage/encrypted_archive.dart';
+import 'package:waec_direct/features/auth/auth_providers.dart';
+import 'package:waec_direct/features/checker/checker_providers.dart';
+
+/// Scriptable [BiometricAuthenticator] — no device, no method channel.
+///
+/// Defaults to "unsupported device" so widget tests that do not care about
+/// biometrics get the password path deterministically. Tests that do care set
+/// [capable] / [nextOutcome] / [outcomes] explicitly.
+class FakeBiometricAuthenticator implements BiometricAuthenticator {
+  FakeBiometricAuthenticator({
+    this.capable = const BiometricCapability.unsupported(),
+    this.nextOutcome = BiometricOutcome.success,
+    List<BiometricOutcome>? outcomes,
+  }) : outcomes = outcomes ?? <BiometricOutcome>[];
+
+  /// What [capability] reports.
+  ///
+  /// Named [capable] — not [capability] — because the interface declares
+  /// `capability()` as a *method*; a field of the same name is a compile
+  /// error (`conflicting_field_and_method`).
+  BiometricCapability capable;
+
+  /// Outcome returned when [outcomes] is empty.
+  BiometricOutcome nextOutcome;
+
+  /// FIFO scripted outcomes; when non-empty each [authenticate] shifts one.
+  final List<BiometricOutcome> outcomes;
+
+  /// Number of [authenticate] calls made.
+  int authenticateCalls = 0;
+
+  /// Reasons passed to [authenticate], for assertion.
+  final List<String> reasons = <String>[];
+
+  bool stopCalled = false;
+  bool stopResult = true;
+
+  @override
+  Future<BiometricOutcome> authenticate({required String reason}) async {
+    authenticateCalls++;
+    reasons.add(reason);
+    return outcomes.isNotEmpty ? outcomes.removeAt(0) : nextOutcome;
+  }
+
+  @override
+  Future<BiometricCapability> capability() async => capable;
+
+  @override
+  Future<bool> stop() async {
+    stopCalled = true;
+    return stopResult;
+  }
+
+  /// A device with an enrolled fingerprint (Class 3 strong biometric).
+  static BiometricCapability fingerprintCapable() => const BiometricCapability(
+        hardwareSupported: true,
+        deviceSupported: true,
+        enrolled: <BiometricType>[BiometricType.fingerprint],
+      );
+}
 
 /// Brand fixture mirroring `assets/brand_kit.json`.
 ///
@@ -71,22 +135,63 @@ final Brand testBrand = Brand.fromJson(const <String, dynamic>{
 
 /// Wraps [child] in the same BrandScope -> ProviderScope nesting that `main()`
 /// uses, so `BrandScope.of` and Riverpod both resolve.
+///
+/// Auth-sensitive providers get safe test defaults (in-memory session store,
+/// unsupported-device biometrics, offline fallback allowed) so no test ever
+/// touches a platform channel. Defaults are listed FIRST and caller
+/// [overrides] LAST: Riverpod resolves duplicate overrides last-wins, so an
+/// explicit caller override always beats the harness default. Prefer passing
+/// instances through the named parameters instead — the harness_order_test
+/// locks this contract in.
 Widget wrapWithBrand(
   Widget child, {
   List<Override> overrides = const <Override>[],
-}) =>
-    BrandScope(
-      brand: testBrand,
-      child: ProviderScope(overrides: overrides, child: child),
-    );
+  SessionStore? sessionStore,
+  BiometricAuthenticator? biometrics,
+  bool allowOfflineAuthFallback = true,
+  EncryptedResultArchive? archive,
+}) {
+  return BrandScope(
+    brand: testBrand,
+    child: ProviderScope(
+      overrides: <Override>[
+        sessionStoreProvider
+            .overrideWithValue(sessionStore ?? InMemorySessionStore()),
+        biometricAuthenticatorProvider.overrideWithValue(
+          biometrics ?? FakeBiometricAuthenticator(),
+        ),
+        allowOfflineAuthFallbackProvider
+            .overrideWithValue(allowOfflineAuthFallback),
+        // Explicit null by default: a widget test must never reach a platform
+        // channel for SQLite. Pass a real archive (opened on sqflite_common_ffi)
+        // in the tests that exercise the checker vault.
+        archiveProvider.overrideWithValue(archive),
+        ...overrides,
+      ],
+      child: child,
+    ),
+  );
+}
 
 /// Pumps [child] inside [wrapWithBrand].
 Future<void> pumpApp(
   WidgetTester tester,
   Widget child, {
   List<Override> overrides = const <Override>[],
-}) =>
-    tester.pumpWidget(wrapWithBrand(child, overrides: overrides));
+  SessionStore? sessionStore,
+  BiometricAuthenticator? biometrics,
+  bool allowOfflineAuthFallback = true,
+  EncryptedResultArchive? archive,
+}) => tester.pumpWidget(
+  wrapWithBrand(
+    child,
+    overrides: overrides,
+    sessionStore: sessionStore,
+    biometrics: biometrics,
+    allowOfflineAuthFallback: allowOfflineAuthFallback,
+    archive: archive,
+  ),
+);
 
 /// The branded splash runs a fixed minimum-display animation before handing
 /// off to the auth gate. Tests that care about what comes *after* the splash

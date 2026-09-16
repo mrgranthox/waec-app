@@ -1,16 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
 import 'core/brand.dart';
 import 'core/design_tokens.dart';
 import 'core/domain_types.dart';
+import 'core/storage/encrypted_archive.dart';
 import 'features/about/about_screen.dart';
 import 'features/auth/auth_providers.dart';
 import 'features/auth/auth_screen.dart';
 import 'features/auth/biometric_gate_screen.dart';
 import 'features/auth/signup_screen.dart';
+import 'features/checker/buy_checker_screen.dart';
+import 'features/checker/checker_providers.dart';
 import 'features/history/history_screen.dart';
+import 'features/landing/landing_screen.dart';
 import 'features/legal/privacy_screen.dart';
 import 'features/legal/terms_screen.dart';
 import 'features/processing/processing_screen.dart';
@@ -29,12 +34,35 @@ Future<void> main() async {
   // first frame so every screen — including the splash — renders from it.
   final brand = await Brand.load();
 
+  // Open the encrypted archive before the first frame so the History tab and the
+  // checker vault are ready to render. A device that cannot open it (corrupt
+  // file, unavailable storage) still gets a working app: a null archive reads as
+  // "empty vault" rather than crashing at launch.
+  final archive = await _openArchive();
+
   runApp(
     BrandScope(
       brand: brand,
-      child: const ProviderScope(child: WaecApp()),
+      child: ProviderScope(
+        overrides: <Override>[archiveProvider.overrideWithValue(archive)],
+        child: const WaecApp(),
+      ),
     ),
   );
+}
+
+/// Open (or create) the encrypted result archive, or null when the device
+/// cannot provide one.
+Future<EncryptedResultArchive?> _openArchive() async {
+  try {
+    final dir = await getDatabasesPath();
+    return await EncryptedResultArchive.open('$dir/waec_archive.db');
+  } catch (_) {
+    // Deliberately swallowed: storage is not a reason to deny a candidate
+    // access to the app. The vault providers treat null as "no local storage"
+    // and the UI says so, instead of a white screen at boot.
+    return null;
+  }
 }
 
 /// Root widget. In-memory state via Riverpod (plan §3.8); themes from
@@ -179,6 +207,26 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   bool _showProcessing = false;
   bool _showResult = false;
 
+  /// Which page tab 0 (Home) is presenting: the hub, the checker purchase form,
+  /// or the guided verification form.
+  _HomePage _page = _HomePage.hub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Read the vault after the first frame: it touches SQLite, which must not
+    // run inside build().
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadVault());
+  }
+
+  /// Pull the encrypted checker vault for this account.
+  Future<void> _loadVault() {
+    if (!mounted) return Future<void>.value();
+    return ref.read(checkerVaultProvider.notifier).load(widget.indexNumber);
+  }
+
+  void _goHub() => setState(() => _page = _HomePage.hub);
+
   void _onJourneyStart() => setState(() => _showProcessing = true);
 
   void _onProcessingComplete() {
@@ -188,10 +236,77 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     });
   }
 
+  void _onTabChanged(int i) {
+    setState(() {
+      _tab = i;
+      // Tapping Home always returns to the hub: the two-option landing page is
+      // the tab's identity, not a transient sub-page.
+      if (i == 0) _page = _HomePage.hub;
+    });
+    // The vault is only meaningful on the History tab, and reloading it there
+    // keeps a checker bought in another tab immediately visible.
+    if (i == 1) _loadVault();
+  }
+
+  /// Spend a stored checker straight from the History tab.
+  Future<void> _redeemChecker(Checker checker) async {
+    setState(() => _showProcessing = true);
+    await ref
+        .read(checkerPurchaseProvider.notifier)
+        .redeem(indexNumber: widget.indexNumber, checkerId: checker.id);
+    if (!mounted) return;
+
+    final purchase = ref.read(checkerPurchaseProvider);
+    setState(() => _showProcessing = false);
+    if (purchase.stage == CheckerPurchaseStage.complete) {
+      setState(() => _showResult = true);
+      return;
+    }
+    // The checker stays in the vault on any failure, so the user can retry the
+    // credential they paid for rather than buying another one.
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          purchase.error ?? 'Could not check your result. Please try again.',
+        ),
+      ),
+    );
+    await _loadVault();
+  }
+
+  /// Irreversible: purge the checker and its credential from this device.
+  Future<void> _deleteChecker(Checker checker) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this checker?'),
+        content: const Text(
+          'Its serial and PIN will be erased from this device permanently. '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Keep'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ref
+        .read(checkerVaultProvider.notifier)
+        .delete(indexNumber: widget.indexNumber, id: checker.id);
+  }
+
   void _closeResult() {
     setState(() {
       _showResult = false;
       _tab = 0;
+      _page = _HomePage.hub;
     });
   }
 
@@ -227,17 +342,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           IndexedStack(
             index: _tab,
             children: [
-              VerificationScreen(
-                onJourneyStart: _onJourneyStart,
-                indexNumber: widget.indexNumber,
-              ),
-              HistoryScreen(
-                snapshots: const [],
-                graceActiveIds: const {},
-                onRefetch: (_) {},
-                onOpen: (_) => setState(() => _showResult = true),
-                onDelete: (_) {},
-              ),
+              _homeTab(),
+              _historyTab(),
               AboutScreen(onNavigate: _openLegal),
             ],
           ),
@@ -250,11 +356,50 @@ class _HomeShellState extends ConsumerState<HomeShell> {
       ),
       bottomNavigationBar: _WaecBottomNav(
         index: _tab,
-        onChanged: (i) => setState(() => _tab = i),
+        onChanged: _onTabChanged,
       ),
     );
   }
+
+  /// Tab 0 — the two-option hub, the checker purchase form, or the guided
+  /// verification form.
+  Widget _homeTab() => switch (_page) {
+    _HomePage.hub => LandingScreen(
+      indexNumber: widget.indexNumber,
+      onCheckResult: () => setState(() => _page = _HomePage.check),
+      onBuyChecker: () => setState(() => _page = _HomePage.buy),
+    ),
+    _HomePage.check => VerificationScreen(
+      indexNumber: widget.indexNumber,
+      onJourneyStart: _onJourneyStart,
+      onBack: _goHub,
+    ),
+    _HomePage.buy => BuyCheckerScreen(
+      indexNumber: widget.indexNumber,
+      onBack: _goHub,
+      onResultReady: _onProcessingComplete,
+    ),
+  };
+
+  /// Tab 1 — saved results plus every checker in the encrypted vault, each with
+  /// the "Check Result" action that spends it.
+  Widget _historyTab() {
+    final vault = ref.watch(checkerVaultProvider);
+    return HistoryScreen(
+      snapshots: const [],
+      graceActiveIds: const {},
+      checkers: vault.checkers,
+      onRefetch: (_) {},
+      onOpen: (_) => setState(() => _showResult = true),
+      onDelete: (_) {},
+      onRedeemChecker: _redeemChecker,
+      onDeleteChecker: _deleteChecker,
+    );
+  }
 }
+
+/// Pages hosted by the Home tab.
+enum _HomePage { hub, check, buy }
 
 /// Result host page shown after a successful journey; supplies the
 /// in-memory-only grade payload (plan §3.5).
@@ -288,7 +433,7 @@ class _WaecBottomNav extends StatelessWidget {
   final ValueChanged<int> onChanged;
 
   static const _tabs = [
-    ('Check Result', Icons.search),
+    ('Home', Icons.home_outlined),
     ('History', Icons.calendar_today_outlined),
     ('About & Legal', Icons.info_outline),
   ];
