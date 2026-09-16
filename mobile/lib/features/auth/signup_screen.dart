@@ -4,56 +4,55 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/design_tokens.dart';
 import '../../core/domain_types.dart';
 import 'auth_providers.dart';
+import 'auth_screen.dart' show waecAuthCardDecoration, waecAuthFieldDecoration;
 import 'auth_widgets.dart';
 
-/// Auth & onboarding — plan §3.2, Figma port of
-/// docs/WAEC Result Verification App/src/screens/AuthScreen.tsx.
+/// Sign-up screen — a candidate must register with their 10-digit index
+/// number before they can sign in (plan §3.2, extended per stakeholder
+/// request). Mirrors the AuthScreen layout language: navy crest header band,
+/// white form card, encrypted footer.
 ///
-/// Navy crest header band + white form card. This is the *sign-in* screen;
-/// first-run registration lives in SignUpScreen (a candidate must sign up with
-/// their index number before signing in). All submission goes through
-/// [authControllerProvider] — the screen itself owns no auth logic.
-///
-/// Validation behaviour is unchanged: 10-digit index, 8+ char password,
-/// biometric fallback (the fingerprint affordance appears when a stored
-/// session has biometric unlock enabled).
-class AuthScreen extends ConsumerStatefulWidget {
-  const AuthScreen({super.key, required this.onGoToSignUp});
+/// Validation reuses [IndexNumberValidator] and [validatePassword] so the
+/// client and the Auth service enforce the identical rules
+/// (microservices/auth/src/svc.rs), and a password is never held in state —
+/// only in the TextEditingController until submit, then dropped (Hard Rule 1).
+class SignUpScreen extends ConsumerStatefulWidget {
+  const SignUpScreen({super.key, required this.onGoToSignIn});
 
-  /// Switches to the sign-up form ("New here? Create an account").
-  final VoidCallback onGoToSignUp;
+  /// Switches to the sign-in form ("Already registered?").
+  final VoidCallback onGoToSignIn;
 
   @override
-  ConsumerState<AuthScreen> createState() => _AuthScreenState();
+  ConsumerState<SignUpScreen> createState() => _SignUpScreenState();
 }
 
-class _AuthScreenState extends ConsumerState<AuthScreen> {
+class _SignUpScreenState extends ConsumerState<SignUpScreen> {
+  final _formKey = GlobalKey<FormState>();
   final _index = TextEditingController();
   final _password = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
+  final _confirm = TextEditingController();
   bool _passwordVisible = false;
-  bool _prefilled = false;
+  bool _consented = false;
 
   @override
   void dispose() {
     _index.dispose();
     _password.dispose();
+    _confirm.dispose();
     super.dispose();
   }
 
-  /// Pre-fills the remembered index number once per screen lifetime.
-  void _prefillRemembered(AuthState auth) {
-    if (_prefilled) return;
-    _prefilled = true;
-    final remembered = auth.rememberedIndex;
-    if (remembered != null && remembered.isNotEmpty) {
-      _index.text = remembered;
-    }
-  }
-
   void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-    ref.read(authControllerProvider.notifier).signIn(
+    if (!_consented) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please accept the Terms & Privacy Policy to continue'),
+        ),
+      );
+      return;
+    }
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    ref.read(authControllerProvider.notifier).signUp(
           indexNumber: _index.text.trim(),
           password: _password.text,
         );
@@ -62,12 +61,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authControllerProvider);
-    _prefillRemembered(auth);
-    final controller = ref.read(authControllerProvider.notifier);
-    // Offer the fingerprint shortcut when the stored session opted in and the
-    // device still has enrolled biometrics.
-    final biometricSession =
-        (auth.session?.biometricEnabled ?? false) && auth.biometricsAvailable;
 
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
@@ -86,13 +79,14 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text('Sign in to retrieve your results',
+                      const Text('Create your account',
                           style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
                               color: WaecColors.navy)),
                       const SizedBox(height: 4),
-                      const Text('Enter your WAEC credentials to continue',
+                      const Text(
+                          'Register with your WAEC index number to start verifying results',
                           style: TextStyle(
                               fontSize: 12, color: Color(0xFF94A3B8))),
                       const SizedBox(height: 24),
@@ -128,12 +122,66 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                         controller: _password,
                         visible: _passwordVisible,
                         enabled: !auth.busy,
-                        hint: 'Password or PIN',
+                        hint: 'At least $kMinPasswordLength characters',
                         validator: validatePassword,
                         onToggleVisibility: () => setState(
                             () => _passwordVisible = !_passwordVisible),
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
+                      PasswordField(
+                        label: 'CONFIRM PASSWORD',
+                        controller: _confirm,
+                        visible: _passwordVisible,
+                        enabled: !auth.busy,
+                        hint: 'Repeat your password',
+                        validator: (v) {
+                          final base = validatePassword(v);
+                          if (base != null) return base;
+                          if (v != _password.text) return 'Passwords do not match';
+                          return null;
+                        },
+                        onToggleVisibility: () => setState(
+                            () => _passwordVisible = !_passwordVisible),
+                      ),
+                      const SizedBox(height: 16),
+                      // The whole consent row is tappable, not just the 24px
+                      // checkbox: a checkbox-sized hit target fails WCAG
+                      // 2.5.5 (Target Size) and is nearly impossible to tap
+                      // reliably on small devices.
+                      InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: auth.busy
+                            ? null
+                            : () => setState(() => _consented = !_consented),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: Checkbox(
+                                  value: _consented,
+                                  onChanged: auth.busy
+                                      ? null
+                                      : (v) => setState(
+                                          () => _consented = v ?? false),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Text(
+                                  'I accept the Terms of Service and Privacy Policy',
+                                  style: TextStyle(
+                                      fontSize: 12, color: Color(0xFF64748B)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
                       FilledButton(
                         style: FilledButton.styleFrom(
                           backgroundColor: WaecColors.navy,
@@ -152,29 +200,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                 child: CircularProgressIndicator(
                                     strokeWidth: 2, color: Colors.white),
                               )
-                            : const Text('Sign in'),
+                            : const Text('Create account'),
                       ),
-                      if (biometricSession) ...[
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          icon: const Icon(Icons.fingerprint, size: 22),
-                          label: const Text('Use Fingerprint / Face ID'),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(50),
-                            foregroundColor: WaecColors.navy,
-                            side: const BorderSide(color: Color(0xFFE2E8F0)),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                          ),
-                          onPressed: auth.busy
-                              ? null
-                              : () => controller.unlockWithBiometrics(),
-                        ),
-                      ],
                       const SizedBox(height: 12),
                       TextButton(
-                        onPressed: auth.busy ? null : widget.onGoToSignUp,
-                        child: const Text('New here? Create an account',
+                        onPressed: auth.busy ? null : widget.onGoToSignIn,
+                        child: const Text('Already registered? Sign in',
                             style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w600,
@@ -193,40 +224,3 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     );
   }
 }
-
-/// Card + field decorations shared by the Figma auth layout.
-BoxDecoration waecAuthCardDecoration() => BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFFE2E8F0)),
-      boxShadow: const [
-        BoxShadow(
-            color: Color(0x0D0A2540), blurRadius: 12, offset: Offset(0, 2)),
-      ],
-    );
-
-InputDecoration waecAuthFieldDecoration(
-        {required String hint, Widget? suffix}) =>
-    InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-      counterText: '',
-      filled: true,
-      fillColor: const Color(0xFFF8FAFC),
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      suffixIcon: suffix,
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Color(0xFFE2E8F0), width: 1.5),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(
-            color: WaecColors.mint.withValues(alpha: 0.6), width: 1.5),
-      ),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Color(0xFFE2E8F0), width: 1.5),
-      ),
-    );

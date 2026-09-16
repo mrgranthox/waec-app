@@ -25,6 +25,93 @@ abstract class WaecApi {
   /// Live transaction stage stream: SSE with adaptive 2-second
   /// short-polling fallback (plan §3.4). Emits until terminal.
   Stream<TransactionStage> transactionStages(String transactionId);
+
+  // ── Auth (plan §2.1 / §3.2) ─────────────────────────────────────────────
+  //
+  // Backed by the Auth service RPCs already defined in
+  // microservices/proto/waec/auth/v1/auth.proto (Register / Login / Refresh /
+  // BindBiometric) and routed at the edge by /v1/auth/ in
+  // infra/gateway/conf.d/api.conf.
+  //
+  // Every method throws [AuthException] with a typed [AuthFailureKind]; callers
+  // must not catch-and-ignore, because only [AuthFailureKind.unreachable] is
+  // eligible for the on-device session fallback.
+
+  /// Creates an account for a 10-digit index number and returns a session.
+  Future<AuthSession> register({
+    required String indexNumber,
+    required String password,
+  });
+
+  /// Exchanges index + password for a session.
+  Future<AuthSession> login({
+    required String indexNumber,
+    required String password,
+  });
+
+  /// Rotates a refresh token into a fresh token pair (plan §2.1).
+  Future<AuthSession> refresh({
+    required String indexNumber,
+    required String refreshToken,
+  });
+
+  /// Binds a platform-keystore public key to the account so the server knows
+  /// this device is fingerprint-enabled (`BindBiometric` RPC).
+  Future<bool> bindBiometric({
+    required String accessToken,
+    required String platformPublicKey,
+  });
+}
+
+/// Why an auth call failed.
+///
+/// Typed rather than a string so the UI can distinguish "wrong password"
+/// (show the form again) from "account locked for 15 minutes" (plan §4.6 —
+/// stop the user hammering it) from "backend unreachable" (the only case where
+/// the on-device session fallback is allowed).
+enum AuthFailureKind {
+  /// Index + password did not match.
+  invalidCredentials,
+
+  /// Brute-force lockout is active (5 failures -> 15 min).
+  accountLocked,
+
+  /// Sign-up for an index number that already has an account.
+  indexAlreadyRegistered,
+
+  /// Index number failed the 10-digit rule server-side.
+  invalidIndexNumber,
+
+  /// Password failed the server-side length rule.
+  invalidPassword,
+
+  /// The presented access/refresh token was rejected.
+  tokenInvalid,
+
+  /// The Auth endpoint could not be reached at all.
+  unreachable,
+
+  /// Anything else.
+  unknown;
+
+  /// Only a network failure may fall back to an on-device session.
+  bool get isNetworkFailure => this == AuthFailureKind.unreachable;
+}
+
+/// Typed auth error.
+///
+/// The [message] is user-presentable and never contains the password or any
+/// token material (Hard Rule 1).
+class AuthException implements Exception {
+  const AuthException(this.kind, this.message);
+
+  final AuthFailureKind kind;
+  final String message;
+
+  bool get isNetworkFailure => kind.isNetworkFailure;
+
+  @override
+  String toString() => 'AuthException(${kind.name})';
 }
 
 /// Static SHA-256 certificate pins (plan §3.9: pinning compiled into
@@ -153,6 +240,85 @@ class HttpWaecApi implements WaecApi {
         displayMessage: value['display_message'] as String? ?? '',
       ),
       RetryExhausted(:final lastError) => throw lastError,
+    };
+  }
+
+  // ── Auth (plan §2.1 / §3.2) ─────────────────────────────────────────────
+
+  @override
+  Future<AuthSession> register({
+    required String indexNumber,
+    required String password,
+  }) => _authSession('/v1/auth/register', indexNumber, <String, dynamic>{
+    'index_number': indexNumber,
+    'password': password,
+  });
+
+  @override
+  Future<AuthSession> login({
+    required String indexNumber,
+    required String password,
+  }) => _authSession('/v1/auth/login', indexNumber, <String, dynamic>{
+    'index_number': indexNumber,
+    'password': password,
+  });
+
+  @override
+  Future<AuthSession> refresh({
+    required String indexNumber,
+    required String refreshToken,
+  }) => _authSession('/v1/auth/refresh', indexNumber, <String, dynamic>{
+    'refresh_token': refreshToken,
+  });
+
+  /// Binding is best-effort: the fingerprint unlock works on-device whether
+  /// or not the server recorded the key, so a failure here must never block or
+  /// delay sign-in. It reports `false` rather than throwing.
+  @override
+  Future<bool> bindBiometric({
+    required String accessToken,
+    required String platformPublicKey,
+  }) async {
+    final result = await retryWithBackoff<Map<String, dynamic>>(
+      () async {
+        final resp = await _dio.post<Map<String, dynamic>>(
+          '/v1/auth/biometric/bind',
+          data: <String, dynamic>{
+            'access_token': accessToken,
+            'platform_public_key': platformPublicKey,
+          },
+        );
+        return resp.data ?? <String, dynamic>{};
+      },
+      isRetryable: isTransientNetworkError,
+    );
+    return switch (result) {
+      RetrySuccess(:final value) => value['bound'] as bool? ?? false,
+      RetryExhausted() => false,
+    };
+  }
+
+  /// Shared POST for the three session-issuing endpoints.
+  Future<AuthSession> _authSession(
+    String path,
+    String indexNumber,
+    Map<String, dynamic> body,
+  ) async {
+    final result = await retryWithBackoff<Map<String, dynamic>>(
+      () async {
+        final resp = await _dio.post<Map<String, dynamic>>(path, data: body);
+        return resp.data ?? <String, dynamic>{};
+      },
+      // Deliberately narrow: only a request that never produced an HTTP
+      // response may be retried. Retrying a *received* 401 would count the
+      // same rejected password three times against the server-side lockout
+      // (plan §4.6: 5 failures -> 15 min) and lock the candidate out of their
+      // own account for one typo.
+      isRetryable: isTransientNetworkError,
+    );
+    return switch (result) {
+      RetrySuccess(:final value) => sessionFromWire(value, indexNumber),
+      RetryExhausted(:final lastError) => throw mapAuthError(lastError),
     };
   }
 
@@ -401,6 +567,172 @@ class SseParser {
   }
 }
 
+// ── Auth wire mapping ───────────────────────────────────────────────────────
+//
+// The JSON<->gRPC REST facade in front of the Auth service is not deployed yet
+// (infra/gateway/conf.d/api.conf still `grpc_pass`es /v1/auth/), so the exact
+// error envelope is not fixed. These mappers are therefore deliberately
+// tolerant: they look for the canonical domain codes from
+// microservices/common/src/errors.rs anywhere in the payload — including inside
+// the gRPC `details` string, which DomainError formats as "CODE|message" — and
+// fall back to HTTP status semantics.
+
+/// True only when the request never produced an HTTP response.
+///
+/// Used as `retryWithBackoff`'s `isRetryable` for auth calls. A received 4xx is
+/// *never* retried: a rejected password must count exactly once against the
+/// server-side brute-force lockout (plan §4.6), not once per retry.
+bool isTransientNetworkError(Object error) => switch (error) {
+  DioException(:final type) => switch (type) {
+    DioExceptionType.connectionTimeout ||
+    DioExceptionType.sendTimeout ||
+    DioExceptionType.receiveTimeout ||
+    DioExceptionType.transformTimeout ||
+    DioExceptionType.connectionError ||
+    DioExceptionType.unknown => true,
+    // A certificate failure is never retried: it means pinning rejected the
+    // peer (possible MITM), and retrying just re-offers the same bad peer
+    // (plan §3.9, Hard Rule 5).
+    DioExceptionType.badCertificate => false,
+    DioExceptionType.badResponse || DioExceptionType.cancel => false,
+  },
+  _ => false,
+};
+
+/// Builds an [AuthSession] from an Auth-service response body.
+///
+/// Throws [AuthException] when the body carries no token material: a 200
+/// without an access token is a broken facade, not a successful login, and
+/// treating it as a session would admit the user with no credential check.
+AuthSession sessionFromWire(Map<String, dynamic> value, String indexNumber) {
+  final access =
+      (value['access_token'] ?? value['accessToken']) as String? ?? '';
+  if (access.isEmpty) {
+    throw const AuthException(
+      AuthFailureKind.unknown,
+      'The server returned an incomplete response. Please try again.',
+    );
+  }
+  final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  return AuthSession(
+    indexNumber: value['index_number'] as String? ?? indexNumber,
+    userId: (value['user_id'] ?? value['userId']) as String? ?? '',
+    accessToken: access,
+    refreshToken:
+        (value['refresh_token'] ?? value['refreshToken']) as String? ?? '',
+    accessExpiresAtUnix:
+        (value['access_expires_at_unix'] as num?)?.toInt() ?? now,
+    issuedAtUnix: now,
+    source: AuthSessionSource.server,
+  );
+}
+
+/// Translates a transport failure into a typed, user-presentable
+/// [AuthException].
+///
+/// The message is always a fixed local string — raw server text is never
+/// surfaced, so an internal error string cannot leak implementation detail
+/// (Hard Rule 1).
+AuthException mapAuthError(Object error) {
+  if (error is AuthException) return error;
+  if (error is! DioException) {
+    return const AuthException(
+      AuthFailureKind.unknown,
+      'Sign-in failed. Please try again.',
+    );
+  }
+
+  final response = error.response;
+  // No response at all: DNS, TLS, captive portal, offline, timeout.
+  if (response == null) {
+    return const AuthException(
+      AuthFailureKind.unreachable,
+      'Cannot reach the WAEC gateway. Check your connection and try again.',
+    );
+  }
+
+  final status = response.statusCode ?? 0;
+  if (status >= 500) {
+    return const AuthException(
+      AuthFailureKind.unreachable,
+      'The WAEC gateway is unavailable right now. Please try again shortly.',
+    );
+  }
+
+  final haystack = _wireHaystack(response.data).toUpperCase();
+
+  // Lockout first: it must win over invalidCredentials so the UI stops the
+  // user retrying instead of inviting another attempt.
+  if (haystack.contains('AUTH_LOCKED_OUT') ||
+      haystack.contains('RATE_LIMITED') ||
+      status == 429 ||
+      status == 423) {
+    return const AuthException(
+      AuthFailureKind.accountLocked,
+      'Too many attempts. This account is temporarily locked — '
+      'please try again in 15 minutes.',
+    );
+  }
+  if (haystack.contains('AUTH_TOKEN_INVALID') ||
+      haystack.contains('AUTH_TOKEN_EXPIRED')) {
+    return const AuthException(
+      AuthFailureKind.tokenInvalid,
+      'Your session has expired. Please sign in again.',
+    );
+  }
+  if (haystack.contains('INVALID_INDEX_NUMBER')) {
+    // The Auth service reports a duplicate index under the *same* code
+    // (microservices/auth/src/svc.rs), so the wording is the only
+    // discriminator between "bad format" and "already registered".
+    final lower = haystack.toLowerCase();
+    if (lower.contains('registered') ||
+        lower.contains('exists') ||
+        lower.contains('duplicate')) {
+      return const AuthException(
+        AuthFailureKind.indexAlreadyRegistered,
+        'That index number already has an account. Please sign in instead.',
+      );
+    }
+    return const AuthException(
+      AuthFailureKind.invalidIndexNumber,
+      'Index number must be exactly 10 digits.',
+    );
+  }
+  // The Auth service reuses INVALID_EXAM_PARAMS for the password-length rule.
+  if (haystack.contains('INVALID_EXAM_PARAMS')) {
+    return const AuthException(
+      AuthFailureKind.invalidPassword,
+      'Password must be at least $kMinPasswordLength characters.',
+    );
+  }
+  if (haystack.contains('AUTH_INVALID_CREDENTIALS') || status == 401) {
+    return const AuthException(
+      AuthFailureKind.invalidCredentials,
+      'Incorrect index number or password.',
+    );
+  }
+  if (status == 409) {
+    return const AuthException(
+      AuthFailureKind.indexAlreadyRegistered,
+      'That index number already has an account. Please sign in instead.',
+    );
+  }
+  return const AuthException(
+    AuthFailureKind.unknown,
+    'Sign-in failed. Please try again.',
+  );
+}
+
+/// Flattens a response body into one searchable string.
+///
+/// `Map.toString()` keeps every key and value intact, which is enough to find a
+/// domain code regardless of which field the facade nested it in.
+String _wireHaystack(Object? data) => switch (data) {
+  null => '',
+  String() => data,
+  _ => data.toString(),
+};
+
 /// Deterministic mock for widget/integration tests: scripted stages and
 /// key-capture to prove idempotency-key preservation across retries.
 class MockWaecApi implements WaecApi {
@@ -417,6 +749,29 @@ class MockWaecApi implements WaecApi {
   final List<TransactionStage> stages;
   final Price price;
   final List<String> charges = [];
+
+  // ── Auth simulation knobs ───────────────────────────────────────────────
+
+  /// Index numbers that have completed sign-up against this mock.
+  final Set<String> registeredIndexes = <String>{};
+
+  /// When true, [login] refuses unless the index was registered first.
+  bool requireRegistration = false;
+
+  /// When non-null, every [login] fails with this kind — lets tests exercise
+  /// the lockout and invalid-credential UI without a backend.
+  AuthFailureKind? loginFailure;
+
+  /// When true, every auth call throws [AuthFailureKind.unreachable], which is
+  /// how the REST facade being down presents itself. Drives the on-device
+  /// session fallback path.
+  bool authUnreachable = false;
+
+  /// Number of [bindBiometric] calls (count only — never the key material).
+  int bindBiometricCalls = 0;
+
+  /// The password this mock accepts. A constant so no credential is stored.
+  static const String acceptedPassword = 'password123';
 
   @override
   Future<ChargeInit> initCharge({
@@ -444,5 +799,106 @@ class MockWaecApi implements WaecApi {
       await Future<void>.delayed(const Duration(milliseconds: 30));
       yield s;
     }
+  }
+
+  void _guardAuth() {
+    if (authUnreachable) {
+      throw const AuthException(
+        AuthFailureKind.unreachable,
+        'Cannot reach the WAEC gateway.',
+      );
+    }
+  }
+
+  AuthSession _mockSession(String indexNumber) {
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return AuthSession(
+      indexNumber: indexNumber,
+      userId: 'user-$indexNumber',
+      accessToken: 'mock-access-$indexNumber',
+      refreshToken: 'mock-refresh-$indexNumber',
+      // Matches the backend's 15-minute access-token TTL (Hard Rule 5).
+      accessExpiresAtUnix: now + 900,
+      issuedAtUnix: now,
+      source: AuthSessionSource.server,
+    );
+  }
+
+  @override
+  Future<AuthSession> register({
+    required String indexNumber,
+    required String password,
+  }) async {
+    _guardAuth();
+    if (!IndexNumberValidator.isValid(indexNumber)) {
+      throw const AuthException(
+        AuthFailureKind.invalidIndexNumber,
+        'Index number must be exactly 10 digits.',
+      );
+    }
+    if (password.length < kMinPasswordLength) {
+      throw const AuthException(
+        AuthFailureKind.invalidPassword,
+        'Password must be at least $kMinPasswordLength characters.',
+      );
+    }
+    if (!registeredIndexes.add(indexNumber)) {
+      throw const AuthException(
+        AuthFailureKind.indexAlreadyRegistered,
+        'That index number already has an account.',
+      );
+    }
+    return _mockSession(indexNumber);
+  }
+
+  @override
+  Future<AuthSession> login({
+    required String indexNumber,
+    required String password,
+  }) async {
+    _guardAuth();
+    final forced = loginFailure;
+    if (forced != null) {
+      throw AuthException(forced, 'Simulated $forced failure');
+    }
+    if (requireRegistration && !registeredIndexes.contains(indexNumber)) {
+      throw const AuthException(
+        AuthFailureKind.invalidCredentials,
+        'Incorrect index number or password.',
+      );
+    }
+    if (!IndexNumberValidator.isValid(indexNumber) ||
+        password != acceptedPassword) {
+      throw const AuthException(
+        AuthFailureKind.invalidCredentials,
+        'Incorrect index number or password.',
+      );
+    }
+    return _mockSession(indexNumber);
+  }
+
+  @override
+  Future<AuthSession> refresh({
+    required String indexNumber,
+    required String refreshToken,
+  }) async {
+    _guardAuth();
+    if (refreshToken.isEmpty) {
+      throw const AuthException(
+        AuthFailureKind.tokenInvalid,
+        'Your session has expired. Please sign in again.',
+      );
+    }
+    return _mockSession(indexNumber);
+  }
+
+  @override
+  Future<bool> bindBiometric({
+    required String accessToken,
+    required String platformPublicKey,
+  }) async {
+    if (authUnreachable) return false;
+    bindBiometricCalls++;
+    return true;
   }
 }

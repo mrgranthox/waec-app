@@ -1,31 +1,53 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/brand.dart';
 import 'core/design_tokens.dart';
 import 'core/domain_types.dart';
 import 'features/about/about_screen.dart';
+import 'features/auth/auth_providers.dart';
 import 'features/auth/auth_screen.dart';
+import 'features/auth/biometric_gate_screen.dart';
+import 'features/auth/signup_screen.dart';
 import 'features/history/history_screen.dart';
 import 'features/legal/privacy_screen.dart';
 import 'features/legal/terms_screen.dart';
 import 'features/processing/processing_screen.dart';
 import 'features/results/result_canvas.dart';
+import 'features/splash/branded_splash.dart';
 import 'features/verification/verification_providers.dart';
 import 'features/verification/verification_screen.dart';
 
-void main() {
-  runApp(const ProviderScope(child: WaecApp()));
+Future<void> main() async {
+  // Keep the native splash on screen until the branded Flutter splash has
+  // painted, then hand off seamlessly (BrandedSplash calls remove()).
+  final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+  FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+  // Load the brand kit (single source of truth for app identity) before the
+  // first frame so every screen — including the splash — renders from it.
+  final brand = await Brand.load();
+
+  runApp(
+    BrandScope(
+      brand: brand,
+      child: const ProviderScope(child: WaecApp()),
+    ),
+  );
 }
 
 /// Root widget. In-memory state via Riverpod (plan §3.8); themes from
-/// the central design tokens (plan §3.1).
+/// the central design tokens (plan §3.1). App identity comes from the
+/// brand kit via [BrandScope].
 class WaecApp extends StatelessWidget {
   const WaecApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final brand = BrandScope.of(context);
     return MaterialApp(
-      title: 'WAEC Direct',
+      title: brand.appName,
       debugShowCheckedModeBanner: false,
       theme: WaecTheme.light(),
       darkTheme: WaecTheme.dark(),
@@ -35,28 +57,62 @@ class WaecApp extends StatelessWidget {
   }
 }
 
-/// Auth gate: shows [AuthScreen] until sign-in succeeds, then swaps to
-/// [HomeShell]. Stays wrapped in [_LifecycleGuard] so the result-state
-/// purge on backgrounding (plan §3.8) remains active for the whole session.
-class _AuthGate extends StatefulWidget {
+/// Boot + auth gate: shows the branded [BrandedSplash] while starting up (its
+/// minimum display AND the auth boot must both finish), then routes on the
+/// [AuthStage] from [authControllerProvider]:
+///
+/// - [AuthStage.signUp] -> [SignUpScreen] (first run: register before sign-in)
+/// - [AuthStage.signIn] -> [AuthScreen]
+/// - [AuthStage.biometricUnlock] -> [BiometricGateScreen] (fingerprint prompt)
+/// - [AuthStage.biometricEnroll] -> [BiometricEnrollScreen] (consent offer)
+/// - [AuthStage.authenticated] -> [HomeShell]
+///
+/// Stays wrapped in [_LifecycleGuard] so the result-state purge on
+/// backgrounding (plan §3.8) remains active for the whole session.
+class _AuthGate extends ConsumerStatefulWidget {
   const _AuthGate();
 
   @override
-  State<_AuthGate> createState() => _AuthGateState();
+  ConsumerState<_AuthGate> createState() => _AuthGateState();
 }
 
-class _AuthGateState extends State<_AuthGate> {
-  String? _indexNumber;
+class _AuthGateState extends ConsumerState<_AuthGate> {
+  bool _booted = false;
 
   @override
   Widget build(BuildContext context) {
-    return _LifecycleGuard(
-      child: _indexNumber == null
-          ? AuthScreen(
-              onAuthenticated: (index) => setState(() => _indexNumber = index),
-            )
-          : HomeShell(indexNumber: _indexNumber!),
-    );
+    final auth = ref.watch(authControllerProvider);
+
+    final Widget child;
+    if (!_booted || auth.stage == AuthStage.booting) {
+      child = BrandedSplash(onDone: () => setState(() => _booted = true));
+    } else {
+      child = switch (auth.stage) {
+        // booting is handled by the splash branch above.
+        AuthStage.booting => const SizedBox.shrink(),
+        AuthStage.signUp => SignUpScreen(
+            onGoToSignIn: () =>
+                ref.read(authControllerProvider.notifier).goToSignIn(),
+          ),
+        AuthStage.signIn => AuthScreen(
+            onGoToSignUp: () =>
+                ref.read(authControllerProvider.notifier).goToSignUp(),
+          ),
+        AuthStage.biometricUnlock => const BiometricGateScreen(),
+        AuthStage.biometricEnroll => const BiometricEnrollScreen(),
+        AuthStage.authenticated =>
+          // Defensive: authenticated with no session must not crash the gate;
+          // fall back to sign-in, which the controller can always serve.
+          auth.session != null
+              ? HomeShell(session: auth.session!)
+              : AuthScreen(
+                  onGoToSignUp: () =>
+                      ref.read(authControllerProvider.notifier).goToSignUp(),
+                ),
+      };
+    }
+
+    return _LifecycleGuard(child: child);
   }
 }
 
@@ -106,9 +162,13 @@ class _LifecycleGuardState extends State<_LifecycleGuard>
 /// (Check Result / History / About & Legal) with full-screen overlays for
 /// the processing modal and the official result.
 class HomeShell extends ConsumerStatefulWidget {
-  const HomeShell({super.key, required this.indexNumber});
+  const HomeShell({super.key, required this.session});
 
-  final String indexNumber;
+  /// The live session (identity + provenance). Kept whole so screens can show
+  /// the offline-fallback notice and sign out without extra plumbing.
+  final AuthSession session;
+
+  String get indexNumber => session.indexNumber;
 
   @override
   ConsumerState<HomeShell> createState() => _HomeShellState();
