@@ -6,8 +6,16 @@
   "buildNumber": "20260901",
   "androidApplicationId": "gh.com.waecplatform.waecdirect",
   "iosBundleId": "gh.com.waecplatform.waecdirect",
-  "logo": "assets/logo.png",
-  "splash": "assets/splash.png",
+  "tagline": "Official Result Verification Application",
+  "splashDescription": "Verify and retrieve official WAEC results on demand.",
+  "splashStatuses": [
+    "Loading brand assets",
+    "Preparing secure interface",
+    "Connecting to WAEC gateway",
+    "Almost ready"
+  ],
+  "logo": "assets/brand/logo_mark.png",
+  "splash": "assets/brand/splash_logo.png",
   "colors": {
     "ink": "#0A2540",
     "teal": "#00D4B1",
@@ -21,7 +29,24 @@
     "sans": "DM Sans",
     "mono": "JetBrains Mono"
   },
+  "organization": "Edward Nyame",
   "publisher": "Edward Nyame",
+  "copyright": "© 2026 Edward Nyame · All Rights Reserved",
+  "platform": "Android / iOS",
   "minOs": "Android 9+ / iOS 15+",
-  "apiVersion": "WAEC-GW/2.8"
+  "apiVersion": "WAEC-GW/2.8",
+  "support": {
+    "dpoEmail": "xbeeneski@gmail.com",
+    "dpoLabel": "Data Protection Officer",
+    "headOffice": "Accra",
+    "officeLabel": "Accra",
+    "mapQuery": "Ghana, Accra"
+  },
+  "compliance": [
+    { "label": "WAEC API Gateway v2", "status": "Certified" },
+    { "label": "Ghana Data Protection Act 2012", "status": "Compliant" },
+    { "label": "TLS 1.3 Encryption", "status": "Active" },
+    { "label": "NCA Type Approval", "status": "Approved" },
+    { "label": "Bank of Ghana PSP License", "status": "Licensed" }
+  ]
 }
