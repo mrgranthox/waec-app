@@ -4,6 +4,9 @@
 //! and Redis (24 h grace TTL keys). One crate shared by all services so
 //! the store implementations never drift.
 
+pub mod checker_migrations;
+pub mod checkers;
+
 pub mod events;
 pub mod grace;
 pub mod idempotency;
