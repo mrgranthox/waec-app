@@ -16,8 +16,8 @@
         <!-- Draw the navy brand behind the system bars so the status bar extends
              the splash colour (requirement: colour extends to status bar). -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-        <item name="android:systemBarColor">@color/navy</item>
         <item name="android:statusBarColor">@color/navy</item>
+        <item name="android:navigationBarColor">@color/navy</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
     <!-- Theme applied to the Android Window as soon as the process has started.
@@ -33,8 +33,8 @@
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowFullscreen">false</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-        <item name="android:systemBarColor">@color/navy</item>
         <item name="android:statusBarColor">@color/navy</item>
+        <item name="android:navigationBarColor">@color/navy</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>
