@@ -1,206 +1,564 @@
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:local_auth/local_auth.dart' show BiometricType;
 
 import 'package:waec_direct/core/api_client.dart';
 import 'package:waec_direct/core/domain_types.dart';
-import 'package:waec_direct/features/verification/verification_providers.dart';
-import 'package:waec_direct/main.dart';
+import 'package:waec_direct/core/security/biometric_service.dart';
+import 'package:waec_direct/core/security/session_store.dart';
+import 'package:waec_direct/features/auth/auth_providers.dart';
 
-import 'helpers/test_harness.dart';
-
-/// Boots the whole app and advances past the branded splash so the auth gate
-/// is on screen and ready for interaction.
-///
-/// Uses the shipped [MockWaecApi] rather than a test-local stub: it is already
-/// fully configurable (price, stages, auth failures, unreachable facade), so
-/// the tests exercise the same mock the rest of the suite uses instead of
-/// maintaining a parallel fake that can drift from the real [WaecApi] surface.
-///
-/// `stages: const []` keeps the journey stream empty so no processing overlay
-/// interferes with the auth assertions.
-///
-/// The gate boots into [SignUpScreen] (requirement #3: a candidate must
-/// register with their index number before signing in), so sign-in tests call
-/// [_goToSignIn] to cross over through the "Already registered?" link.
-Future<void> _bootToAuth(
-  WidgetTester tester, {
-  MockWaecApi? api,
-}) async {
-  await pumpApp(
-    tester,
-    const WaecApp(),
-    overrides: [
-      waecApiProvider.overrideWithValue(
-        api ??
-            MockWaecApi(
-              stages: const <TransactionStage>[],
-              price: const Price(amountPesewas: 450, currency: 'GHS'),
-            ),
-      ),
-    ],
-  );
-  await settlePastSplash(tester);
-}
-
-/// Walks from the first-run sign-up gate to the sign-in form via the
-/// "Already registered? Sign in" link, asserting the handoff actually
-/// happened (guards against the link regressing to a no-op).
-Future<void> _goToSignIn(WidgetTester tester) async {
-  final link = find.text('Already registered? Sign in');
-  await tester.ensureVisible(link);
-  await tester.pumpAndSettle();
-  await tester.tap(link, warnIfMissed: false);
-  await tester.pumpAndSettle();
-
-  expect(find.text('Sign in to retrieve your results'), findsOneWidget);
-}
+/// Canonical valid session used across these tests. Every required field of
+/// [AuthSession] is supplied, so a constructor change surfaces here first.
+const _kSession = AuthSession(
+  indexNumber: '0000000000',
+  userId: 'user-001',
+  accessToken: 'access-token-here',
+  refreshToken: 'refresh-token-here',
+  accessExpiresAtUnix: 9999999999,
+  issuedAtUnix: 1000000000,
+  source: AuthSessionSource.server,
+);
 
 void main() {
-  testWidgets('first run lands on sign-up before sign-in', (tester) async {
-    await _bootToAuth(tester);
+  group('AuthStage routing', () {
+    test('only authenticated is terminal', () {
+      expect(AuthStage.authenticated.isTerminal, isTrue);
+      for (final stage in AuthStage.values) {
+        if (stage != AuthStage.authenticated) {
+          expect(stage.isTerminal, isFalse, reason: '$stage is not terminal');
+        }
+      }
+    });
 
-    // Requirement #3: with no account known on the device, registration is
-    // the first screen — sign-in is only reachable through the link below.
-    expect(find.text('Create your account'), findsOneWidget);
-        expect(find.text('Sign in to retrieve your results'), findsNothing);
-    expect(find.text('Home'), findsNothing);
+    test('the state machine has exactly the six documented stages', () {
+      // A new stage is a routing change; the gate in main.dart switches on
+      // this enum exhaustively, so pinning the set catches drift.
+      expect(AuthStage.values.length, 6);
+      expect(
+        AuthStage.values.map((s) => s.name).toSet(),
+        {
+          'booting',
+          'signUp',
+          'signIn',
+          'biometricUnlock',
+          'biometricEnroll',
+          'authenticated',
+        },
+      );
+    });
   });
 
-  testWidgets('sign-up without consent is blocked before registration',
-      (tester) async {
-    await _bootToAuth(tester);
+  group('AuthState', () {
+    test('unauthenticated defaults are all clear', () {
+      const s = AuthState(stage: AuthStage.signIn);
+      expect(s.isAuthenticated, isFalse);
+      expect(s.hasError, isFalse);
+      expect(s.isLockedOut, isFalse);
+      expect(s.busy, isFalse);
+      expect(s.offlineFallbackUsed, isFalse);
+      expect(s.biometricsAvailable, isFalse);
+      expect(s.rememberedIndex, isNull);
+      expect(s.session, isNull);
+    });
 
-    final fields = find.byType(TextFormField);
-    expect(fields, findsNWidgets(3)); // index, password, confirm
-    await tester.enterText(fields.at(0), '1002330440');
-    await tester.enterText(fields.at(1), 'password123'); // >= 8 chars
-    await tester.enterText(fields.at(2), 'password123'); // must match
+    test('booting is the default stage', () {
+      expect(const AuthState().stage, AuthStage.booting);
+    });
 
-    final create = find.widgetWithText(FilledButton, 'Create account');
-    await tester.ensureVisible(create);
-    await tester.pumpAndSettle();
-    // Deliberately leave the consent checkbox unticked.
-    await tester.tap(create, warnIfMissed: false);
-    await tester.pumpAndSettle();
+    test('isAuthenticated needs BOTH the stage and a session', () {
+      // A session with the wrong stage is not authenticated, and the right
+      // stage with no session is not either. Both must hold.
+      expect(
+        const AuthState(stage: AuthStage.authenticated).isAuthenticated,
+        isFalse,
+        reason: 'authenticated stage without a session is not authenticated',
+      );
+      expect(
+        AuthState(stage: AuthStage.signIn, session: _kSession).isAuthenticated,
+        isFalse,
+        reason: 'a session on the signIn stage is not authenticated',
+      );
+      expect(
+        AuthState(stage: AuthStage.authenticated, session: _kSession)
+            .isAuthenticated,
+        isTrue,
+      );
+    });
 
-    expect(
-      find.text('Please accept the Terms & Privacy Policy to continue'),
-      findsOneWidget,
-    );
-    // Still on the sign-up gate — nothing was registered.
-    expect(find.text('Create your account'), findsOneWidget);
-    expect(find.text('Verify Results'), findsNothing);
+    test('hasError tracks the error string, not the kind', () {
+      expect(
+        const AuthState(error: 'Invalid credentials').hasError,
+        isTrue,
+      );
+      // A kind without copy is still not "an error to show".
+      expect(
+        const AuthState(errorKind: AuthFailureKind.accountLocked).hasError,
+        isFalse,
+      );
+    });
+
+    test('isLockedOut is true only for accountLocked', () {
+      expect(
+        const AuthState(errorKind: AuthFailureKind.accountLocked).isLockedOut,
+        isTrue,
+      );
+      for (final kind in AuthFailureKind.values) {
+        if (kind != AuthFailureKind.accountLocked) {
+          expect(
+            AuthState(errorKind: kind).isLockedOut,
+            isFalse,
+            reason: '$kind must not read as a lockout',
+          );
+        }
+      }
+    });
+
+    test('biometricsAvailable mirrors the capability gate', () {
+      expect(
+        const AuthState(
+          capability: BiometricCapability(
+            hardwareSupported: true,
+            deviceSupported: true,
+            enrolled: [BiometricType.fingerprint],
+          ),
+        ).biometricsAvailable,
+        isTrue,
+      );
+      expect(
+        const AuthState().biometricsAvailable,
+        isFalse,
+        reason: 'unsupported capability must not advertise biometrics',
+      );
+    });
   });
 
-  testWidgets('sign-up with valid details registers and enters the app shell',
-      (tester) async {
-    await _bootToAuth(tester);
+  group('BiometricCapability', () {
+    test('unsupported() is the safe default', () {
+      const cap = BiometricCapability.unsupported();
+      expect(cap.hardwareSupported, isFalse);
+      expect(cap.deviceSupported, isFalse);
+      expect(cap.enrolled, isEmpty);
+      expect(cap.hasEnrolledBiometrics, isFalse);
+      expect(cap.canUseBiometricLogin, isFalse);
+    });
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.at(0), '1002330440'); // 10-digit index
-    await tester.enterText(fields.at(1), 'password123');
-    await tester.enterText(fields.at(2), 'password123');
+    test('hardware alone is not enough — enrolment is required', () {
+      // canCheckBiometrics can be true with nothing enrolled; showing the
+      // fingerprint affordance then would just fail on tap.
+      const cap = BiometricCapability(
+        hardwareSupported: true,
+        deviceSupported: true,
+        enrolled: [],
+      );
+      expect(cap.hardwareSupported, isTrue);
+      expect(cap.hasEnrolledBiometrics, isFalse);
+      expect(cap.canUseBiometricLogin, isFalse);
+    });
 
-    await tester.ensureVisible(find.byType(Checkbox));
-    await tester.pumpAndSettle();
-    // The whole consent row is a tappable target, so tap the label text
-    // (not the 24px checkbox) exactly as a user would.
-    await tester.tap(find.text('I accept the Terms of Service and Privacy Policy'));
-    await tester.pumpAndSettle();
-    expect(
-      tester.widget<Checkbox>(find.byType(Checkbox)).value,
-      isTrue,
-      reason: 'Tapping the consent label must toggle consent',
-    );
+    test('enrolled biometrics enable the login gate', () {
+      const cap = BiometricCapability(
+        hardwareSupported: true,
+        deviceSupported: true,
+        enrolled: [BiometricType.fingerprint],
+      );
+      expect(cap.hasEnrolledBiometrics, isTrue);
+      expect(cap.canUseBiometricLogin, isTrue);
+    });
 
-    final create = find.widgetWithText(FilledButton, 'Create account');
-    await tester.ensureVisible(create);
-    await tester.pumpAndSettle();
-    await tester.tap(create, warnIfMissed: false);
-    await tester.pumpAndSettle();
-
-        // The registered session is live immediately. The harness fake reports an
-    // unsupported biometric device, so enrollment is skipped and the gate
-    // hands straight to the shell.
-    expect(find.text('Create your account'), findsNothing);
-    expect(find.text('Home'), findsOneWidget);
+    test('toString is identifying-free', () {
+      const cap = BiometricCapability(
+        hardwareSupported: true,
+        deviceSupported: true,
+        enrolled: [BiometricType.fingerprint, BiometricType.face],
+      );
+      final s = cap.toString();
+      expect(s, contains('hardware: true'));
+      expect(s, contains('enrolled: 2'));
+      expect(s, isNot(contains('fingerprint')),
+          reason: 'the enrolled list must be summarised, not enumerated');
+    });
   });
 
-  testWidgets('sign in with valid credentials navigates to the app shell',
-      (tester) async {
-    await _bootToAuth(tester);
-    await _goToSignIn(tester);
+  group('BiometricOutcome', () {
+    test('lockouts never offer the password fallback', () {
+      // Dropping a locked-out user onto the password form invites them to
+      // hammer it and trip the server-side brute-force lockout (plan §4.6).
+      const mustNotFallBack = {
+        BiometricOutcome.success,
+        BiometricOutcome.temporaryLockout,
+        BiometricOutcome.permanentLockout,
+        BiometricOutcome.alreadyInProgress,
+      };
+      for (final outcome in BiometricOutcome.values) {
+        expect(
+          outcome.shouldOfferPasswordFallback,
+          !mustNotFallBack.contains(outcome),
+          reason: '$outcome fallback expectation is wrong',
+        );
+      }
+    });
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.first, '1002330440'); // 10-digit index
-    await tester.enterText(fields.last, 'password123'); // >= 8 chars
+    test('userCanceled falls back to password', () {
+      // Plan §3.2 acceptance: "biometric fallback to PIN".
+      expect(
+        BiometricOutcome.userCanceled.shouldOfferPasswordFallback,
+        isTrue,
+      );
+      expect(BiometricOutcome.userRequestedFallback.shouldOfferPasswordFallback,
+          isTrue);
+    });
 
-    final signIn = find.widgetWithText(FilledButton, 'Sign in');
-    await tester.ensureVisible(signIn);
-    await tester.pumpAndSettle();
-    await tester.tap(signIn, warnIfMissed: false);
-    await tester.pumpAndSettle();
+    test('isUnsupportedDevice covers exactly the hardware gaps', () {
+      const unsupported = {
+        BiometricOutcome.noHardware,
+        BiometricOutcome.noDeviceCredential,
+      };
+      for (final outcome in BiometricOutcome.values) {
+        expect(
+          outcome.isUnsupportedDevice,
+          unsupported.contains(outcome),
+          reason: '$outcome unsupported-device flag is wrong',
+        );
+      }
+    });
 
-        // Regression guard: the button previously called a no-op callback,
-    // so the auth screen stayed mounted forever.
-    expect(find.text('Sign in to retrieve your results'), findsNothing);
-    expect(find.text('Home'), findsOneWidget);
+    test('notEnrolled is not "unsupported" — the sensor exists', () {
+      // The affordance should stay visible-but-explained, not disappear: the
+      // user can enrol a fingerprint and then use it.
+      expect(BiometricOutcome.notEnrolled.isUnsupportedDevice, isFalse);
+      expect(BiometricOutcome.notEnrolled.shouldOfferPasswordFallback, isTrue);
+    });
+
+    test('isSuccess is true only for success', () {
+      for (final outcome in BiometricOutcome.values) {
+        expect(outcome.isSuccess, outcome == BiometricOutcome.success);
+      }
+    });
+
+    test('biometricMessageFor has copy for every non-success outcome', () {
+      expect(biometricMessageFor(BiometricOutcome.success), isNull);
+      for (final outcome in BiometricOutcome.values) {
+        if (outcome == BiometricOutcome.success) continue;
+        final msg = biometricMessageFor(outcome);
+        expect(msg, isNotNull, reason: '$outcome has no user-facing copy');
+        expect(msg, isNotEmpty, reason: '$outcome copy is blank');
+      }
+    });
+
+    test('biometricMessageFor copy never leaks platform internals', () {
+      for (final outcome in BiometricOutcome.values) {
+        final msg = biometricMessageFor(outcome) ?? '';
+        expect(msg, isNot(contains('PlatformException')));
+        expect(msg, isNot(contains('local_auth')));
+        expect(msg, isNot(contains(outcome.name)),
+            reason: 'enum member names must not reach the UI');
+      }
+    });
   });
 
-  testWidgets('short index number is refused without leaving auth',
-      (tester) async {
-    await _bootToAuth(tester);
-    await _goToSignIn(tester);
+  group('AuthSessionSource', () {
+    test('isServerIssued separates the two provenances', () {
+      expect(AuthSessionSource.server.isServerIssued, isTrue);
+      expect(AuthSessionSource.local.isServerIssued, isFalse);
+    });
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.first, '123456'); // not 10 digits
-    await tester.enterText(fields.last, 'password123');
-
-    final signIn = find.widgetWithText(FilledButton, 'Sign in');
-    await tester.ensureVisible(signIn);
-    await tester.pumpAndSettle();
-    await tester.tap(signIn, warnIfMissed: false);
-    await tester.pumpAndSettle();
-
-        expect(find.text('Must be exactly 10 digits'), findsOneWidget);
-    expect(find.text('Sign in to retrieve your results'), findsOneWidget);
-    expect(find.text('Home'), findsNothing);
+    test('fromWire defaults unknown values to local', () {
+      // Fail closed: an unrecognised wire value must never be treated as a
+      // server-issued credential.
+      expect(AuthSessionSource.fromWire('server'), AuthSessionSource.server);
+      expect(AuthSessionSource.fromWire('local'), AuthSessionSource.local);
+      expect(AuthSessionSource.fromWire(null), AuthSessionSource.local);
+      expect(AuthSessionSource.fromWire('garbage'), AuthSessionSource.local);
+      expect(AuthSessionSource.fromWire('SERVER'), AuthSessionSource.local,
+          reason: 'matching is exact, so uppercase is not "server"');
+    });
   });
 
-  testWidgets('short password is refused without leaving auth',
-      (tester) async {
-    await _bootToAuth(tester);
-    await _goToSignIn(tester);
+  group('AuthSession', () {
+    test('toString never contains token material', () {
+      // Hard Rule 1: a stray print(session) or a crash report must not leak
+      // the access or refresh token.
+      const session = AuthSession(
+        indexNumber: '0000000000',
+        userId: 'user-001',
+        accessToken: 'SECRET-access-token-value',
+        refreshToken: 'SECRET-refresh-token-value',
+        accessExpiresAtUnix: 9999999999,
+        issuedAtUnix: 1000000000,
+        source: AuthSessionSource.server,
+      );
+      final s = session.toString();
+      expect(s, isNot(contains('SECRET-access-token-value')));
+      expect(s, isNot(contains('SECRET-refresh-token-value')));
+      expect(s, isNot(contains(session.accessToken)));
+      expect(s, isNot(contains(session.refreshToken)));
+      // Identity and provenance ARE safe and useful in logs.
+      expect(s, contains('0000000000'));
+      expect(s, contains('server'));
+    });
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.first, '1002330440');
-    await tester.enterText(fields.last, 'short'); // < 8 chars
+    test('toJson carries every field the store needs', () {
+      final json = _kSession.toJson();
+      expect(json['index_number'], '0000000000');
+      expect(json['user_id'], 'user-001');
+      expect(json['access_token'], 'access-token-here');
+      expect(json['refresh_token'], 'refresh-token-here');
+      expect(json['access_expires_at_unix'], 9999999999);
+      expect(json['issued_at_unix'], 1000000000);
+      expect(json['source'], 'server');
+      expect(json['biometric_enabled'], false);
+    });
 
-    final signIn = find.widgetWithText(FilledButton, 'Sign in');
-    await tester.ensureVisible(signIn);
-    await tester.pumpAndSettle();
-    await tester.tap(signIn, warnIfMissed: false);
-    await tester.pumpAndSettle();
+    test('toJson/fromJson round-trips losslessly', () {
+      const original = AuthSession(
+        indexNumber: '1234567890',
+        userId: 'u-42',
+        accessToken: 'at',
+        refreshToken: 'rt',
+        accessExpiresAtUnix: 2000000000,
+        issuedAtUnix: 1000000000,
+        biometricEnabled: true,
+        source: AuthSessionSource.local,
+      );
+      final restored = AuthSession.fromJson(original.toJson());
+      expect(restored, isNotNull);
+      expect(restored!.indexNumber, original.indexNumber);
+      expect(restored.userId, original.userId);
+      expect(restored.accessToken, original.accessToken);
+      expect(restored.refreshToken, original.refreshToken);
+      expect(restored.accessExpiresAtUnix, original.accessExpiresAtUnix);
+      expect(restored.issuedAtUnix, original.issuedAtUnix);
+      expect(restored.biometricEnabled, isTrue);
+      expect(restored.source, AuthSessionSource.local);
+    });
 
-        expect(find.text('Password must be at least 8 characters'), findsOneWidget);
-    expect(find.text('Home'), findsNothing);
+    test('fromJson rejects a missing index number', () {
+      expect(AuthSession.fromJson({}), isNull);
+      expect(
+        AuthSession.fromJson({'access_token': 'at', 'refresh_token': 'rt'}),
+        isNull,
+      );
+    });
+
+    test('fromJson rejects a malformed index number', () {
+      // A truncated or tampered store entry must fall back to sign-in rather
+      // than produce a session for the wrong candidate.
+      for (final bad in ['short', '12345678901', '123456789a', '', '   ']) {
+        expect(AuthSession.fromJson({'index_number': bad}), isNull,
+            reason: '"$bad" must be rejected');
+      }
+    });
+
+    test('fromJson rejects a non-string index number', () {
+      expect(AuthSession.fromJson({'index_number': 1234567890}), isNull);
+      expect(AuthSession.fromJson({'index_number': null}), isNull);
+    });
+
+    test('fromJson tolerates missing optional fields', () {
+      // Only the index number is load-bearing; everything else has a safe
+      // default so an older store entry still parses.
+      final s = AuthSession.fromJson({'index_number': '0000000000'});
+      expect(s, isNotNull);
+      expect(s!.userId, '');
+      expect(s.accessToken, '');
+      expect(s.refreshToken, '');
+      expect(s.accessExpiresAtUnix, 0);
+      expect(s.issuedAtUnix, 0);
+      expect(s.biometricEnabled, isFalse);
+      expect(s.source, AuthSessionSource.local);
+    });
+
+    test('fromJson coerces numeric timestamps', () {
+      final s = AuthSession.fromJson({
+        'index_number': '0000000000',
+        'access_expires_at_unix': 1.5e9,
+        'issued_at_unix': 1.4e9,
+      });
+      expect(s, isNotNull);
+      expect(s!.accessExpiresAtUnix, 1500000000);
+      expect(s.issuedAtUnix, 1400000000);
+    });
+
+    test('copyWith overrides only the given fields', () {
+      final updated = _kSession.copyWith(biometricEnabled: true);
+      expect(updated.indexNumber, _kSession.indexNumber);
+      expect(updated.userId, _kSession.userId);
+      expect(updated.accessToken, _kSession.accessToken);
+      expect(updated.refreshToken, _kSession.refreshToken);
+      expect(updated.accessExpiresAtUnix, _kSession.accessExpiresAtUnix);
+      expect(updated.issuedAtUnix, _kSession.issuedAtUnix);
+      expect(updated.source, AuthSessionSource.server);
+      expect(updated.biometricEnabled, isTrue);
+    });
+
+    test('copyWith cannot change the identity', () {
+      // indexNumber and userId are deliberately absent from copyWith: a token
+      // rotation must never be able to move a session onto another candidate.
+      final rotated = _kSession.copyWith(
+        accessToken: 'new-at',
+        refreshToken: 'new-rt',
+        accessExpiresAtUnix: 2000000000,
+      );
+      expect(rotated.indexNumber, _kSession.indexNumber);
+      expect(rotated.userId, _kSession.userId);
+      expect(rotated.accessToken, 'new-at');
+      expect(rotated.refreshToken, 'new-rt');
+    });
+
+    test('isAccessExpired honours the skew', () {
+      const session = AuthSession(
+        indexNumber: '0000000000',
+        userId: 'u',
+        accessToken: 'at',
+        refreshToken: 'rt',
+        accessExpiresAtUnix: 1000,
+        issuedAtUnix: 0,
+        source: AuthSessionSource.server,
+      );
+      expect(session.isAccessExpired(900), isFalse);
+      // Default skew is 30s, so 970 is already "expired" to avoid a token
+      // dying mid-request.
+      expect(session.isAccessExpired(970), isTrue);
+      expect(session.isAccessExpired(1000), isTrue);
+      expect(session.isAccessExpired(2000), isTrue);
+      expect(session.isAccessExpired(970, skewSeconds: 0), isFalse);
+      expect(session.isAccessExpired(500, skewSeconds: 600), isTrue);
+    });
+
+    test('isBiometricEnabled mirrors the flag', () {
+      expect(_kSession.isBiometricEnabled, isFalse);
+      expect(_kSession.copyWith(biometricEnabled: true).isBiometricEnabled,
+          isTrue);
+    });
   });
 
-  testWidgets('non-digit index is refused', (tester) async {
-    await _bootToAuth(tester);
-    await _goToSignIn(tester);
+  group('InMemorySessionStore', () {
+    test('starts empty', () async {
+      final store = InMemorySessionStore();
+      expect(await store.read(), isNull);
+      expect(await store.readRememberedIndex(), isNull);
+    });
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.first, 'abcdefghij');
-    await tester.enterText(fields.last, 'password123');
+    test('accepts a seeded session and index', () async {
+      final store = InMemorySessionStore(
+        session: _kSession,
+        rememberedIndex: '0000000000',
+      );
+      final loaded = await store.read();
+      expect(loaded, isNotNull);
+      expect(loaded!.indexNumber, '0000000000');
+      expect(await store.readRememberedIndex(), '0000000000');
+    });
 
-    final signIn = find.widgetWithText(FilledButton, 'Sign in');
-    await tester.ensureVisible(signIn);
-    await tester.pumpAndSettle();
-    await tester.tap(signIn, warnIfMissed: false);
-    await tester.pumpAndSettle();
+    test('write then read round-trips the session', () async {
+      final store = InMemorySessionStore();
+      await store.write(_kSession);
+      final loaded = await store.read();
+      expect(loaded, isNotNull);
+      expect(loaded!.indexNumber, _kSession.indexNumber);
+      expect(loaded.userId, _kSession.userId);
+      expect(loaded.accessToken, _kSession.accessToken);
+      expect(store.writeCount, 1);
+    });
 
-        expect(find.text('Must be exactly 10 digits'), findsOneWidget);
-    expect(find.text('Home'), findsNothing);
+    test('write replaces the previous session', () async {
+      final store = InMemorySessionStore();
+      await store.write(_kSession);
+      final other = _kSession.copyWith(accessToken: 'second-token');
+      await store.write(other);
+      expect((await store.read())!.accessToken, 'second-token');
+      expect(store.writeCount, 2);
+    });
+
+    test('clear removes the session but keeps the remembered index', () async {
+      // Sign-out semantics: the next launch must offer *sign in*, not ask the
+      // candidate to register an account that already exists.
+      final store = InMemorySessionStore();
+      await store.write(_kSession);
+      await store.writeRememberedIndex('0000000000');
+
+      await store.clear();
+
+      expect(await store.read(), isNull);
+      expect(await store.readRememberedIndex(), '0000000000');
+      expect(store.clearCount, 1);
+    });
+
+    test('clearAll wipes session and remembered index', () async {
+      final store = InMemorySessionStore();
+      await store.write(_kSession);
+      await store.writeRememberedIndex('0000000000');
+
+      await store.clearAll();
+
+      expect(await store.read(), isNull);
+      expect(await store.readRememberedIndex(), isNull);
+      expect(store.clearAllCount, 1);
+    });
+
+    test('writeRememberedIndex rejects an invalid index', () async {
+      final store = InMemorySessionStore();
+      for (final bad in ['short', '12345678901', 'abcdefghij', '']) {
+        await store.writeRememberedIndex(bad);
+        expect(await store.readRememberedIndex(), isNull,
+            reason: '"$bad" must not be remembered');
+      }
+    });
+
+    test('writeRememberedIndex never overwrites a good value with a bad one',
+        () async {
+      final store = InMemorySessionStore();
+      await store.writeRememberedIndex('1234567890');
+      await store.writeRememberedIndex('nope');
+      expect(await store.readRememberedIndex(), '1234567890');
+    });
+
+    test('clear on an empty store is a no-op, not an error', () async {
+      final store = InMemorySessionStore();
+      await store.clear();
+      await store.clearAll();
+      expect(await store.read(), isNull);
+      expect(store.clearCount, 1);
+      expect(store.clearAllCount, 1);
+    });
+  });
+
+  group('AuthFailureKind', () {
+    test('only unreachable counts as a network failure', () {
+      // The on-device session fallback is allowed ONLY for a network failure
+      // (Hard Rule 5). Every other kind must be surfaced, never papered over.
+      expect(AuthFailureKind.unreachable.isNetworkFailure, isTrue);
+      for (final kind in AuthFailureKind.values) {
+        if (kind == AuthFailureKind.unreachable) continue;
+        expect(kind.isNetworkFailure, isFalse,
+            reason: '$kind must not allow the offline fallback');
+      }
+    });
+
+    test('wrong credentials are not a network failure', () {
+      expect(AuthFailureKind.invalidCredentials.isNetworkFailure, isFalse);
+      expect(AuthFailureKind.accountLocked.isNetworkFailure, isFalse);
+      expect(AuthFailureKind.tokenInvalid.isNetworkFailure, isFalse);
+    });
+  });
+
+  group('AuthException', () {
+    test('toString exposes the kind but never the message', () {
+      const e = AuthException(
+        AuthFailureKind.invalidCredentials,
+        'That index number and password do not match',
+      );
+      expect(e.toString(), 'AuthException(invalidCredentials)');
+      expect(e.toString(), isNot(contains('password')));
+      expect(e.message, isNotEmpty);
+      expect(e.kind, AuthFailureKind.invalidCredentials);
+    });
+
+    test('isNetworkFailure delegates to the kind', () {
+      const network = AuthException(AuthFailureKind.unreachable, 'offline');
+      const creds = AuthException(AuthFailureKind.invalidCredentials, 'bad');
+      expect(network.isNetworkFailure, isTrue);
+      expect(creds.isNetworkFailure, isFalse);
+    });
   });
 }

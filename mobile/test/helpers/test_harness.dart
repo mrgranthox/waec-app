@@ -124,7 +124,7 @@ final Brand testBrand = Brand.fromJson(const <String, dynamic>{
     'dpoEmail': 'dpo@example.test',
     'dpoLabel': 'Data Protection Officer',
     'headOffice': 'Accra',
-    'officeLabel': 'Accra',
+    'officeLabel': 'Head office',
     'mapQuery': 'Ghana, Accra',
   },
   'compliance': <Map<String, dynamic>>[

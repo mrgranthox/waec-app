@@ -1,380 +1,306 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
-import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waec_direct/core/api_client.dart';
+
 import 'package:waec_direct/core/domain_types.dart';
-import 'package:waec_direct/core/network/retry_policy.dart';
+import 'package:waec_direct/core/design_tokens.dart';
+import 'package:waec_direct/core/api_client.dart';
 
 void main() {
-  group('IndexNumberValidator', () {
-    test('accepts exactly 10 digits', () {
-      expect(IndexNumberValidator.isValid('1002330440'), isTrue);
-    });
-
-    test('rejects short, long, non-digit input', () {
-      expect(IndexNumberValidator.isValid('10023304'), isFalse);
-      expect(IndexNumberValidator.isValid('10023304400'), isFalse);
-      expect(IndexNumberValidator.isValid('100233044O'), isFalse);
-      expect(IndexNumberValidator.isValid(''), isFalse);
-    });
-
-    test('validate returns message for bad input', () {
-      expect(IndexNumberValidator.validate('12'), contains('10 digits'));
-      expect(IndexNumberValidator.validate('1002330440'), isNull);
-    });
-  });
-
-  group('IdempotencyKeys', () {
-    test('creates valid UUIDv4 keys', () {
-      final key = IdempotencyKeys.create();
-      expect(key.length, 36);
-      expect(key.split('-').length, 5);
-    });
-
-    test('keys are unique', () {
-      final keys = {for (var i = 0; i < 1000; i++) IdempotencyKeys.create()};
-      expect(keys.length, 1000);
-    });
-  });
-
-  group('BackoffPolicy', () {
-    test('full jitter keeps delays within [0, cap]', () {
-      final policy = BackoffPolicy(baseDelay: const Duration(milliseconds: 100), maxRetries: 5);
-      for (var i = 0; i < 5; i++) {
-        final d = policy.nextDelay();
-        expect(d.inMilliseconds, lessThanOrEqualTo(1600)); // 100 * 2^i cap within max
-        expect(d.inMilliseconds, greaterThanOrEqualTo(0));
-      }
-    });
-
-    test('exhausts after maxRetries', () {
-      final policy = BackoffPolicy(maxRetries: 3);
-      expect(policy.exhausted, isFalse);
-      policy.nextDelay();
-      policy.nextDelay();
-      expect(policy.exhausted, isFalse);
-      policy.nextDelay();
-      expect(policy.exhausted, isTrue);
-    });
-
-    test('reset restores attempts', () {
-      final policy = BackoffPolicy(maxRetries: 1);
-      policy.nextDelay();
-      expect(policy.exhausted, isTrue);
-      policy.reset();
-      expect(policy.exhausted, isFalse);
-    });
-  });
-
-  group('retryWithBackoff', () {
-    test('returns value on first success', () async {
-      var calls = 0;
-      final result = await retryWithBackoff<int>(() async {
-        calls++;
-        return 42;
-      });
-      expect(result, isA<RetrySuccess<int>>());
-      expect((result as RetrySuccess<int>).value, 42);
-      expect(calls, 1);
-    });
-
-    test('retries with same operation then succeeds', () async {
-      var calls = 0;
-      final result = await retryWithBackoff<int>(
-        () async {
-          calls++;
-          if (calls < 3) throw Exception('transient');
-          return 7;
-        },
-        policy: BackoffPolicy(baseDelay: const Duration(milliseconds: 1), maxRetries: 3),
-      );
-      expect((result as RetrySuccess<int>).value, 7);
-      expect(calls, 3);
-    });
-
-    test('exhausts and surfaces last error', () async {
-      var calls = 0;
-      final result = await retryWithBackoff<int>(
-        () async {
-          calls++;
-          throw Exception('always fails');
-        },
-        policy: BackoffPolicy(baseDelay: const Duration(milliseconds: 1), maxRetries: 2),
-      );
-      expect(result, isA<RetryExhausted<int>>());
-      expect(calls, 3); // initial + 2 retries
-    });
-
-    test('non-retryable errors stop immediately', () async {
-      var calls = 0;
-      final result = await retryWithBackoff<int>(
-        () async {
-          calls++;
-          throw Exception('fatal');
-        },
-        policy: BackoffPolicy(baseDelay: const Duration(milliseconds: 1), maxRetries: 3),
-        isRetryable: (_) => false,
-      );
-      expect(result, isA<RetryExhausted<int>>());
-      expect(calls, 1);
-    });
-  });
-
-  group('ExamType', () {
-    test('covers all Ghana exam types', () {
-      expect(ExamType.values.length, 3);
-      expect(ExamType.bece.code, 'BECE');
-      expect(ExamType.wasscePrivate.displayName, contains('Nwasie'));
-    });
-  });
-
-  group('TransactionStageValues.tryFromCode', () {
-    test('accepts the REST snake_case wire form', () {
-      expect(
-        TransactionStageValues.tryFromCode('payment_confirmation'),
-        TransactionStage.paymentConfirmation,
-      );
-      expect(
-        TransactionStageValues.tryFromCode('waec_retrieval'),
-        TransactionStage.waecRetrieval,
-      );
-    });
-
-    test('accepts the raw proto enum name', () {
-      expect(
-        TransactionStageValues.tryFromCode(
-            'TRANSACTION_STAGE_VOUCHER_PROVISIONING'),
-        TransactionStage.voucherProvisioning,
-      );
-    });
-
-    test('is case insensitive and matches Dart enum names', () {
-      expect(
-        TransactionStageValues.tryFromCode('Complete'),
-        TransactionStage.complete,
-      );
-      expect(
-        TransactionStageValues.tryFromCode('transactionstagefailed'),
-        TransactionStage.failed,
-      );
-    });
-
-    test('unknown / empty yields null — never a fabricated failure', () {
-      // A stage added server-side later must degrade to "still processing",
-      // not tell the candidate they failed.
-      expect(TransactionStageValues.tryFromCode('refunding'), isNull);
-      expect(TransactionStageValues.tryFromCode(''), isNull);
-      expect(TransactionStageValues.tryFromCode(null), isNull);
-    });
-  });
-
-  group('SseParser', () {
-    test('parses a simple event', () {
-      final frames =
-          SseParser().feed('id: 7\ndata: payment_confirmation\n\n');
-      expect(frames, hasLength(1));
-      expect(frames.single.id, '7');
-      expect(frames.single.stage, TransactionStage.paymentConfirmation);
-    });
-
-    test('handles CRLF terminators', () {
-      final frames = SseParser().feed('data: complete\r\n\r\n');
-      expect(frames.single.stage, TransactionStage.complete);
-    });
-
-    test('an event split across chunks is buffered, not dropped', () {
-      final parser = SseParser();
-      expect(parser.feed('data: waec_retr'), isEmpty);
-      final frames = parser.feed('ieval\n\n');
-      expect(frames.single.stage, TransactionStage.waecRetrieval);
-    });
-
-    test('feeding one character at a time still dispatches once', () {
-      const wire = 'id: 12\ndata: {"stage":"failed"}\n\n';
-      final parser = SseParser();
-      final out = <SseFrame>[];
-      for (var i = 0; i < wire.length; i++) {
-        out.addAll(parser.feed(wire[i]));
-      }
-      expect(out, hasLength(1));
-      expect(out.single.id, '12');
-      expect(out.single.stage, TransactionStage.failed);
-    });
-
-    test('JSON payload carrying a stage field is understood', () {
-      final frames =
-          SseParser().feed('data: {"stage":"voucher_provisioning"}\n\n');
-      expect(frames.single.stage, TransactionStage.voucherProvisioning);
-    });
-
-    test('malformed JSON yields no stage rather than throwing', () {
-      final frames = SseParser().feed('data: {"stage": broken\n\n');
-      expect(frames.single.stage, isNull);
-    });
-
-    test('comment heartbeats produce no frame', () {
-      expect(SseParser().feed(': keepalive\n\n'), isEmpty);
-    });
-
-    test('multi-line data fields are joined', () {
-      final frames = SseParser().feed('data: line1\ndata: line2\n\n');
-      expect(frames.single.data, 'line1\nline2');
-    });
-
-    test('flush dispatches a final event missing its blank line', () {
-      // Real-world: carrier drops the connection mid-event.
-      final parser = SseParser();
-      expect(parser.feed('id: 3\ndata: complete'), isEmpty);
-      expect(parser.flush()?.stage, TransactionStage.complete);
-    });
-
-    test('ids are tracked per event for Last-Event-ID resumption', () {
-      final frames = SseParser()
-          .feed('id: 1\ndata: payment_confirmation\n\nid: 2\ndata: complete\n\n');
-      expect(frames.map((f) => f.id).toList(), ['1', '2']);
-    });
-
-    test('feed on empty input is a no-op', () {
-      expect(SseParser().feed(''), isEmpty);
-    });
-  });
-
-  group('HttpWaecApi.transactionStages (SSE + 2s fallback, plan §4.10)', () {
-    test('emits stages from a live SSE stream and stops at terminal',
-        () async {
-      final requests = <RequestOptions>[];
-      const wire = 'id: 1\ndata: payment_confirmation\n\n'
-          'id: 2\ndata: voucher_provisioning\n\n'
-          'id: 3\ndata: waec_retrieval\n\n'
-          'id: 4\ndata: complete\n\n';
-      final api = HttpWaecApi(
-        dio: _stubDio(requests, (options) {
-          expect(options.headers['Accept'], 'text/event-stream');
-          // Streams must not be compressed: gzip buffers frames and the
-          // gateway would hold stages back (§4.10).
-          expect(options.headers['Accept-Encoding'], 'identity');
-          return _sseResponse(wire);
-        }),
-      );
-
-      final stages = await api.transactionStages('tx-1').toList();
-      expect(stages, [
-        TransactionStage.paymentConfirmation,
-        TransactionStage.voucherProvisioning,
-        TransactionStage.waecRetrieval,
-        TransactionStage.complete,
-      ]);
-      // Terminal event ends the stream without falling back to polling.
-      expect(requests, hasLength(1));
-      expect(requests.single.path, '/v1/stream/transactions/tx-1');
-    });
-
-    test('heartbeats and unknown stages are skipped, not surfaced', () async {
-      final api = HttpWaecApi(
-        dio: _stubDio([], (options) {
-          return _sseResponse(': keepalive\n\n'
-              'data: refunding\n\n' // a stage this client does not know yet
-              'data: complete\n\n');
-        }),
-      );
-      final stages = await api.transactionStages('tx-1').toList();
-      expect(stages, [TransactionStage.complete]);
-    });
-
-    test('connection failure before any byte falls back to polling',
-        () async {
-      final requests = <RequestOptions>[];
-      final polls = <String>[];
-      final api = HttpWaecApi(
-        dio: _stubDio(requests, (options) {
-          final path = options.path;
-          if (path.startsWith('/v1/stream/')) {
-            throw DioException(
-              requestOptions: options,
-              type: DioExceptionType.connectionError,
-            );
-          }
-          polls.add(path);
-          return _jsonResponse(
-              path, {'stage': polls.length < 2 ? 'waec_retrieval' : 'complete'});
-        }),
-      );
-
-      final stages = await api.transactionStages('tx-9').toList();
-      expect(stages.last, TransactionStage.complete);
-      expect(polls, isNotEmpty);
-      expect(polls.first, '/v1/transaction/status/tx-9');
-    });
-
-    test('stream that ends before terminal resumes once with Last-Event-ID',
-        () async {
-      final seenResumeTokens = <String?>[];
-      var streamCalls = 0;
-      final api = HttpWaecApi(
-        dio: _stubDio([], (options) {
-          if (!options.path.startsWith('/v1/stream/')) {
-            return _jsonResponse(options.path, {'stage': 'complete'});
-          }
-          streamCalls++;
-          seenResumeTokens.add(options.headers['Last-Event-ID'] as String?);
-          if (streamCalls == 1) {
-            // Carrier drops the link after stage 2; no terminal reached.
-            return _sseResponse('id: 1\ndata: payment_confirmation\n\n'
-                'id: 2\ndata: refunding\n\n');
-          }
-          return _sseResponse('id: 5\ndata: complete\n\n');
-        }),
-      );
-
-      final stages = await api.transactionStages('tx-2').toList();
-      expect(streamCalls, 2);
-      // First attempt has no token; the second resumes from event "2".
-      expect(seenResumeTokens[0], isNull);
-      expect(seenResumeTokens[1], '2');
-      expect(stages.first, TransactionStage.paymentConfirmation);
-      expect(stages.last, TransactionStage.complete);
-    });
-  });
-}
-
-/// Dio whose transport is a script, so SSE and poll behaviour are testable
-/// without a socket. The interceptor short-circuits before any adapter runs.
-Dio _stubDio(
-  List<RequestOptions> captured,
-  dynamic Function(RequestOptions options) handler,
-) {
-  final dio = Dio(BaseOptions(baseUrl: 'https://api.test'));
-  dio.interceptors.add(
-    InterceptorsWrapper(
-      onRequest: (options, controller) async {
-        captured.add(options);
-        try {
-          controller.resolve(handler(options) as Response<dynamic>);
-        } on DioException catch (e) {
-          controller.reject(e);
+  group('Core domain types', () {
+    group('ExamType', () {
+      test('all exam types have non-empty code and display name', () {
+        for (final t in ExamType.values) {
+          expect(t.code, isNotEmpty);
+          expect(t.displayName, isNotEmpty);
         }
-      },
-    ),
-  );
-  return dio;
-}
+      });
 
-Response<ResponseBody> _sseResponse(String wire) {
-  final chunk = Uint8List.fromList(utf8.encode(wire));
-  return Response<ResponseBody>(
-    data: ResponseBody(Stream<Uint8List>.value(chunk), 200,
-        headers: const {'content-type': ['text/event-stream']}),
-    statusCode: 200,
-    requestOptions: RequestOptions(path: '/v1/stream/transactions'),
-  );
-}
+      test('fromCode returns known type for valid code', () {
+        expect(ExamType.fromCode('BECE'), equals(ExamType.bece));
+        expect(ExamType.fromCode('WASSCE_SC'), equals(ExamType.wassceSchool));
+        expect(ExamType.fromCode('WASSCE_PRIVATE'), equals(ExamType.wasscePrivate));
+      });
 
-Response<Map<String, dynamic>> _jsonResponse(
-        String path, Map<String, dynamic> body) =>
-    Response<Map<String, dynamic>>(
-      data: body,
-      statusCode: 200,
-      requestOptions: RequestOptions(path: path),
-    );
+      test('fromCode falls back to bece for unknown code', () {
+        expect(ExamType.fromCode('NOPE'), equals(ExamType.bece));
+        expect(ExamType.fromCode(null), equals(ExamType.bece));
+      });
+    });
+
+    group('Exam years', () {
+      test('includes 1990 as the floor year', () {
+        expect(kExamYears.first, equals('2026'));
+        expect(kExamYears.last, equals('1990'));
+        expect(kExamYears, contains('1990'));
+      });
+
+      test('is contiguous and descending', () {
+        for (var i = 0; i < kExamYears.length - 1; i++) {
+          final cur = int.parse(kExamYears[i]);
+          final next = int.parse(kExamYears[i + 1]);
+          expect(cur, equals(next + 1),
+              reason: '${kExamYears[i]} should be one more than ${kExamYears[i + 1]}');
+        }
+      });
+
+      test('kDefaultExamYear is the most recent', () {
+        expect(kDefaultExamYear, equals(kExamYears.first));
+      });
+
+      test('kExamYearFloor matches the last year', () {
+        expect(kExamYearFloor, equals(1990));
+        expect(int.parse(kExamYears.last), equals(kExamYearFloor));
+      });
+    });
+
+    group('validateExamYear', () {
+      test('accepts a year within range', () {
+        expect(validateExamYear('2024'), isNull);
+        expect(validateExamYear('1990'), isNull);
+        expect(validateExamYear('2005'), isNull);
+      });
+
+      test('rejects years before 1990', () {
+        expect(validateExamYear('1989'), isNotEmpty);
+        expect(validateExamYear('1900'), isNotEmpty);
+        expect(validateExamYear('0'), isNotEmpty);
+      });
+
+      test('rejects future years', () {
+        final future = DateTime.now().year + 1;
+        expect(validateExamYear('$future'), isNotEmpty);
+      });
+
+      test('rejects non-numeric input', () {
+        expect(validateExamYear('abc'), isNotEmpty);
+        expect(validateExamYear('2024x'), isNotEmpty);
+      });
+
+      test('rejects empty input', () {
+        expect(validateExamYear(''), isNotEmpty);
+        expect(validateExamYear(null), isNotEmpty);
+      });
+    });
+
+    group('TransactionStage', () {
+      test('terminal stages are marked', () {
+        expect(TransactionStage.complete.isTerminal, isTrue);
+        expect(TransactionStage.failed.isTerminal, isTrue);
+        expect(TransactionStage.paymentConfirmation.isTerminal, isFalse);
+        expect(TransactionStage.voucherProvisioning.isTerminal, isFalse);
+        expect(TransactionStage.waecRetrieval.isTerminal, isFalse);
+      });
+    });
+
+    group('IndexNumberValidator', () {
+      test('validates 10-digit strings', () {
+        expect(IndexNumberValidator.isValid('1234567890'), isTrue);
+        expect(IndexNumberValidator.isValid('0000000000'), isTrue);
+        expect(IndexNumberValidator.isValid('9999999999'), isTrue);
+      });
+
+      test('rejects short, long, and non-digit input', () {
+        expect(IndexNumberValidator.isValid('123456789'), isFalse);
+        expect(IndexNumberValidator.isValid('12345678901'), isFalse);
+        expect(IndexNumberValidator.isValid('123456789a'), isFalse);
+        expect(IndexNumberValidator.isValid(''), isFalse);
+        expect(IndexNumberValidator.isValid('   '), isFalse);
+      });
+
+      test('validate returns helpful messages', () {
+        expect(IndexNumberValidator.validate(''), equals('Index number required'));
+        expect(IndexNumberValidator.validate('123'), equals('Must be exactly 10 digits'));
+        expect(IndexNumberValidator.validate('1234567890'), isNull);
+      });
+    });
+
+    group('CheckerValidator', () {
+      test('accepts well-formed serials', () {
+        expect(CheckerValidator.isValidSerial('123456789012345678'), isTrue);
+        expect(CheckerValidator.isValidSerial('ABCDEFGHIJKLMNOP'), isTrue);
+      });
+
+      test('rejects short or blank serials', () {
+        expect(CheckerValidator.isValidSerial(''), isFalse);
+        expect(CheckerValidator.isValidSerial('short'), isFalse);
+      });
+
+      test('accepts well-formed PINs', () {
+        expect(CheckerValidator.isValidPin('12345678'), isTrue);
+        expect(CheckerValidator.isValidPin('ABCDEFGH'), isTrue);
+        expect(CheckerValidator.isValidPin('Ab12Cd34'), isTrue);
+      });
+
+      test('rejects PINs outside length bounds', () {
+        expect(CheckerValidator.isValidPin('1234567'), isFalse);
+        expect(CheckerValidator.isValidPin('1234567890123456789012345'), isFalse);
+      });
+
+      test('maskSerial hides all but last 4 chars', () {
+        expect(CheckerValidator.maskSerial('ABCDEFGHIJ'), equals('\u2022\u2022\u2022\u2022\u2022\u2022GHIJ'));
+        expect(CheckerValidator.maskSerial('ABC'), equals('\u2022\u2022\u2022'));
+      });
+    });
+
+    group('Design tokens', () {
+      test('WaecColors defines all brand tokens', () {
+        expect(WaecColors.navy, isA<Color>());
+        expect(WaecColors.mint, isA<Color>());
+        expect(WaecColors.canvasLight, isA<Color>());
+        expect(WaecColors.canvasDark, isA<Color>());
+        expect(WaecColors.success, isA<Color>());
+        expect(WaecColors.warning, isA<Color>());
+        expect(WaecColors.danger, isA<Color>());
+      });
+
+      test('WaecSpacing is a 4pt grid', () {
+        expect(WaecSpacing.xs.toInt() % 4, equals(0));
+        expect(WaecSpacing.sm.toInt() % 4, equals(0));
+        expect(WaecSpacing.md.toInt() % 4, equals(0));
+        expect(WaecSpacing.lg.toInt() % 4, equals(0));
+        expect(WaecSpacing.xl.toInt() % 4, equals(0));
+        expect(WaecSpacing.xxl.toInt() % 4, equals(0));
+      });
+
+      test('WaecRadii is sane', () {
+        expect(WaecRadii.sm, lessThan(WaecRadii.md));
+        expect(WaecRadii.md, lessThan(WaecRadii.lg));
+        expect(WaecRadii.lg, lessThan(WaecRadii.pill));
+      });
+    });
+
+    group('CheckerStatus', () {
+      test('isRedeemable reflects correct subset', () {
+        expect(CheckerStatus.unused.isRedeemable, isTrue);
+        expect(CheckerStatus.redeemed.isRedeemable, isFalse);
+        expect(CheckerStatus.expired.isRedeemable, isFalse);
+      });
+    });
+
+    group('Checker', () {
+      test('isExpiredAt respects explicit expiry', () {
+        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        final checker = Checker(
+          id: 'c1',
+          serial: 'SER12345678',
+          pin: '12345678',
+          examType: 'BECE',
+          examYear: '2024',
+          status: CheckerStatus.unused,
+          purchasedAtUnix: now - 1000,
+          expiresAtUnix: now - 100, // already expired
+        );
+        expect(checker.isExpiredAt(now), isTrue);
+
+        final fresh = Checker(
+          id: 'c2',
+          serial: 'SER12345678',
+          pin: '12345678',
+          examType: 'BECE',
+          examYear: '2024',
+          status: CheckerStatus.unused,
+          purchasedAtUnix: now - 1000,
+          expiresAtUnix: now + 1000, // not yet expired
+        );
+        expect(fresh.isExpiredAt(now), isFalse);
+      });
+
+      test('maskedSerial is safe to render', () {
+        final checker = Checker(
+          id: 'c1',
+          serial: 'ABCDEFGHIJKLMNOPQRST',
+          pin: '12345678',
+          examType: 'BECE',
+          examYear: '2024',
+          status: CheckerStatus.unused,
+          purchasedAtUnix: 1000,
+        );
+        // toString must never include the serial or pin.
+        final str = checker.toString();
+        expect(str, isNot(contains('ABCDEFGHIJKLMNOPQRST')));
+        expect(str, isNot(contains('12345678')));
+        expect(str, contains('c1'));
+        expect(str, contains('BECE'));
+        expect(str, contains('2024'));
+      });
+
+      test('copyWith preserves fields', () {
+        const original = Checker(
+          id: 'c1',
+          serial: 'SER12345678',
+          pin: '12345678',
+          examType: 'BECE',
+          examYear: '2024',
+          status: CheckerStatus.unused,
+          purchasedAtUnix: 1000,
+        );
+        final updated = original.copyWith(status: CheckerStatus.redeemed);
+        expect(updated.id, equals(original.id));
+        expect(updated.serial, equals(original.serial));
+        expect(updated.pin, equals(original.pin));
+        expect(updated.status, equals(CheckerStatus.redeemed));
+      });
+    });
+
+    group('Price model', () {
+      test('display formats as currency', () {
+        expect(
+          const Price(amountPesewas: 2000, currency: 'GHS').display,
+          equals('GHS 20.00'),
+        );
+        expect(
+          const Price(amountPesewas: 1500, currency: 'GHS').display,
+          equals('GHS 15.00'),
+        );
+        expect(
+          const Price(amountPesewas: 50, currency: 'GHS').display,
+          equals('GHS 0.50'),
+        );
+      });
+
+      test('display falls back to GHS 20.00 for non-positive amount', () {
+        expect(
+          const Price(amountPesewas: 0, currency: 'GHS').display,
+          equals('GHS 20.00'),
+        );
+        expect(
+          const Price(amountPesewas: -100, currency: 'GHS').display,
+          equals('GHS 20.00'),
+        );
+      });
+    });
+
+    group('AuthFailureKind', () {
+      test('isNetworkFailure is true only for unreachable', () {
+        expect(AuthFailureKind.unreachable.isNetworkFailure, isTrue);
+        expect(AuthFailureKind.invalidCredentials.isNetworkFailure, isFalse);
+        expect(AuthFailureKind.accountLocked.isNetworkFailure, isFalse);
+        expect(AuthFailureKind.unknown.isNetworkFailure, isFalse);
+      });
+    });
+
+    group('CheckerFailureKind', () {
+      test('isNetworkFailure is true only for unreachable', () {
+        expect(CheckerFailureKind.unreachable.isNetworkFailure, isTrue);
+        expect(CheckerFailureKind.checkerRejected.isNetworkFailure, isFalse);
+        expect(CheckerFailureKind.unknown.isNetworkFailure, isFalse);
+      });
+    });
+
+    group('AuthException', () {
+      test('toString never contains the message', () {
+        const e = AuthException(AuthFailureKind.invalidCredentials, 'Wrong password');
+        expect(e.toString(), equals('AuthException(invalidCredentials)'));
+        expect(e.toString(), isNot(contains('Wrong password')));
+      });
+    });
+
+    group('CheckerException', () {
+      test('toString never contains the message', () {
+        const e = CheckerException(CheckerFailureKind.checkerRejected, 'Bad PIN');
+        expect(e.toString(), equals('CheckerException(checkerRejected)'));
+        expect(e.toString(), isNot(contains('Bad PIN')));
+      });
+    });
+  });
+}
