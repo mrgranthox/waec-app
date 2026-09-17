@@ -88,6 +88,8 @@ class _ResultCanvasState extends State<ResultCanvas> {
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy result header below.
+        top: false,
         bottom: false,
         child: ListView(
           padding: EdgeInsets.zero,
@@ -177,7 +179,13 @@ class _NavyResultHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         color: WaecColors.navy,
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+        // Status-bar inset absorbed here so the navy band reaches the top edge.
+        padding: EdgeInsets.fromLTRB(
+          20,
+          16 + MediaQuery.paddingOf(context).top,
+          20,
+          16,
+        ),
         child: Column(
           children: [
             Row(

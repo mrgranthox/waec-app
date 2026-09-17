@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- WAEC Direct brand navy (design tokens: WaecColors.navy) -->
+    <!-- WAEC Direct brand colours (single source of truth for the Android
+         resource layer; all styles.xml variants reference these by name). -->
+    <!-- Brand navy (design tokens: WaecColors.navy). -->
+    <color name="navy">#0A2540</color>
     <color name="waec_navy">#0A2540</color>
+    <!-- Brand teal (design tokens: WaecColors.mint) for accent use. -->
     <color name="waec_teal">#00D4B1</color>
-	<color name="ic_launcher_background">#FFFFFF</color>
+    <!-- White splash (reported request): native launch + Flutter branded phase. -->
+    <color name="splash">#FFFFFF</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api_client.dart';
 import '../../core/design_tokens.dart';
 import '../../core/domain_types.dart';
 import '../../core/ui/waec_ui.dart';
@@ -31,12 +32,32 @@ class VerificationScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final form = ref.watch(verificationFormProvider);
-    final priceAsync = ref.watch(priceProvider(form.examType));
+    // The index is locked to the signed-in account: the form state starts
+    // empty and is never typed into, so the value this screen acts on is the
+    // parameter — the same resolution `_start` applies. Gating the CTA on
+    // `form.isValid` alone left it permanently disabled, because nothing in
+    // the app ever populates `form.indexNumber` (`setIndex` has no callers):
+    // the locked row cannot be typed, so the gate could never open.
+    final effectiveIndex =
+        form.indexNumber.isEmpty ? indexNumber : form.indexNumber;
+    final canSubmit = IndexNumberValidator.isValid(effectiveIndex);
+    // This flow always spends the checker it buys — "check result" is the whole
+    // point of the screen — so it is priced at the checker-and-retrieve rate
+    // (ADR-002), the same rate the charge below will use.
+    final price = ref.watch(
+      priceProvider(PriceRequest(examType: form.examType, checkNow: true)),
+    );
+    // The notifier guarantees a value from the first frame (the documented
+    // offline price for this shape), so there is no spinner and no "..." state
+    // for the CTA to sit in.
+    final displayPrice = price.valueOrNull ?? fallbackCheckNowPrice;
     final back = onBack;
 
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy header below.
+        top: false,
         bottom: false,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -102,33 +123,16 @@ class VerificationScreen extends ConsumerWidget {
                       ),
                     ),
                   ),
-                  // CTA with dynamic server-driven price (plan §3.3). When the
-                  // pricing endpoint is unreachable we fall back to the standard
-                  // fee so the journey is never blocked (the authoritative amount
-                  // is shown again on Paystack's checkout).
+                  // CTA with the single resolved price (plan §3.3 / ADR-002).
+                  // The amount is already known on the first frame, so there is
+                  // no loading state to wait through, and it is the same figure
+                  // the charge will use.
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
-                    child: priceAsync.when(
-                      loading: () => const SizedBox(
-                        height: 56,
-                        child: Center(
-                            child:
-                                CircularProgressIndicator(strokeWidth: 3)),
-                      ),
-                      // getPricing already falls back to a default on network
-                      // error, so this only fires while the request is in flight
-                      // or if the backend returns an unusable 0 amount.
-                      error: (_, _) => _NavyCta(
-                        label: 'Pay ${fallbackPrice.display} & Fetch Result',
-                        onPressed:
-                            form.isValid ? () => _start(ref, form) : null,
-                      ),
-                      data: (price) => _NavyCta(
-                        // CTA disabled until valid (acceptance §3.3).
-                        label: 'Pay ${price.display} & Fetch Result',
-                        onPressed:
-                            form.isValid ? () => _start(ref, form) : null,
-                      ),
+                    child: _NavyCta(
+                      label: 'Pay ${displayPrice.display} & Fetch Result',
+                      onPressed:
+                          canSubmit ? () => _start(ref, form) : null,
                     ),
                   ),
                   const Padding(
@@ -167,6 +171,9 @@ class VerificationScreen extends ConsumerWidget {
               form.indexNumber.isEmpty ? indexNumber : form.indexNumber,
           examType: form.examType,
           examYear: form.examYear,
+          // This flow spends the checker it buys, so it must be charged at the
+          // combined rate the CTA quoted (ADR-002).
+          checkNow: true,
         );
     onJourneyStart();
   }

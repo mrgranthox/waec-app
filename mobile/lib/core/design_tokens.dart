@@ -61,6 +61,31 @@ const SystemUiOverlayStyle kNavySystemBarStyle = SystemUiOverlayStyle(
   systemNavigationBarIconBrightness: Brightness.light,
 );
 
+/// White system-bar style for the branded splash phase (native hand-off
+/// through [BrandedSplash]).
+///
+/// The native launch window paints `@color/splash` (#FFFFFF) behind both bars
+/// (see `android/app/src/main/res/values/styles.xml`), so the Flutter splash
+/// must carry the same white bars or the hand-off visibly flips white → navy
+/// mid-load. Applied from two places while the splash is on screen:
+///
+/// 1. [SystemChrome.setSystemUIOverlayStyle] at boot (`main.dart`), which
+///    otherwise overrides the native theme's white bars before any widget
+///    paints;
+/// 2. `Scaffold.systemOverlayStyle` on [BrandedSplash], which beats the root
+///    [AnnotatedRegion] (dark text-on-white icons for the light background).
+///
+/// When the splash unmounts, the root `AnnotatedRegion` in `WaecApp` re-asserts
+/// [kNavySystemBarStyle] for the rest of the session — no explicit reset is
+/// needed.
+const SystemUiOverlayStyle kSplashSystemBarStyle = SystemUiOverlayStyle(
+  statusBarColor: Colors.white,
+  statusBarBrightness: Brightness.light,
+  statusBarIconBrightness: Brightness.dark,
+  systemNavigationBarColor: Colors.white,
+  systemNavigationBarIconBrightness: Brightness.dark,
+);
+
 /// Spacing scale (4pt grid).
 abstract final class WaecSpacing {
   static const double xs = 4;

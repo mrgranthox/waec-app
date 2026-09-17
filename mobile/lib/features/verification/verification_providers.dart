@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show immutable;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api_client.dart';
@@ -45,16 +46,90 @@ class VerificationFormNotifier extends StateNotifier<VerificationForm> {
   void setYear(String y) => state = state.copyWith(examYear: y);
 }
 
-/// Live price fetched from backend config (CTA shows server-driven GHS).
-/// If the backend is unreachable the UI falls back to a default so the
-/// journey is never blocked (see verification_screen.dart).
-final priceProvider = FutureProvider.family<Price, ExamType>((ref, exam) {
-  return ref.watch(waecApiProvider).getPricing(exam);
-});
+/// What the candidate is about to buy, as far as pricing is concerned.
+///
+/// Pricing is per *purchase*, not per exam type (ADR-002): a checker bought on
+/// its own costs less than one spent immediately, which also pays for the
+/// retrieval. Making the flag part of the provider key means a screen cannot
+/// render one shape's price while buying the other.
+@immutable
+class PriceRequest {
+  const PriceRequest({required this.examType, this.checkNow = false});
 
-/// Offline-safe price used when the pricing endpoint is unreachable.
-/// Matches the backend's standard single-result fee (GHS 20.00).
-const fallbackPrice = Price(amountPesewas: 2000, currency: 'GHS');
+  final ExamType examType;
+
+  /// True when the checker is spent in the same pass.
+  final bool checkNow;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PriceRequest &&
+      other.examType == examType &&
+      other.checkNow == checkNow;
+
+  @override
+  int get hashCode => Object.hash(examType, checkNow);
+
+  @override
+  String toString() => 'PriceRequest(${examType.name}, checkNow: $checkNow)';
+}
+
+/// Resolves the live price for a purchase, retaining the last known figure while
+/// a new one is fetched.
+///
+/// The state is never empty: it starts at the documented offline price for the
+/// requested shape and only ever moves on to a server figure. That is what
+/// removes the "the price has to load before it appears" behaviour — the price
+/// card and the CTA are driven by the same value from the first frame, and
+/// flipping "Also check my results now" reprices both immediately (ADR-002).
+class PriceNotifier extends StateNotifier<AsyncValue<Price>> {
+  PriceNotifier({required this.api, required this.request})
+    : super(
+        AsyncValue<Price>.data(
+          fallbackPriceFor(checkNow: request.checkNow),
+        ),
+      ) {
+    refresh();
+  }
+
+  /// The API the amount is resolved from.
+  final WaecApi api;
+
+  /// The purchase shape being priced.
+  final PriceRequest request;
+
+  /// Fetch the live amount from the backend config endpoint.
+  ///
+  /// `copyWithPrevious` keeps the current amount on screen while the request is
+  /// in flight, so a refresh or a revisit never blanks the display or flashes a
+  /// placeholder over a figure the user has already seen.
+  Future<void> refresh() async {
+    state = const AsyncValue<Price>.loading().copyWithPrevious(state);
+    try {
+      final price = await api.getPricing(
+        examType: request.examType,
+        checkNow: request.checkNow,
+      );
+      if (!mounted) return;
+      state = AsyncValue<Price>.data(price);
+    } catch (error, stack) {
+      if (!mounted) return;
+      // A failure keeps the last good amount visible rather than collapsing the
+      // CTA: Paystack's checkout remains the authority on the final figure.
+      state = AsyncValue<Price>.error(error, stack).copyWithPrevious(state);
+    }
+  }
+}
+
+/// Live price for a purchase shape (dynamic GHS, plan §2.2; two-part checker
+/// pricing per ADR-002).
+final priceProvider =
+    StateNotifierProvider.family<PriceNotifier, AsyncValue<Price>, PriceRequest>(
+      (ref, request) => PriceNotifier(
+        api: ref.watch(waecApiProvider),
+        request: request,
+      ),
+    );
 
 final verificationFormProvider =
     StateNotifierProvider<VerificationFormNotifier, VerificationForm>(
@@ -87,10 +162,14 @@ class JourneyNotifier extends StateNotifier<JourneyState> {
   /// Begin the retrieval journey: init charge (idempotent), then stream
   /// stages via SSE-with-polling-fallback. Payment method is chosen by the
   /// user on Paystack's hosted checkout, so no in-app channel/phone is sent.
+  ///
+  /// [checkNow] is passed through to the charge so the backend prices the
+  /// purchase the way the screen quoted it (ADR-002).
   Future<void> start({
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) async {
     // Idempotency key created ONCE and preserved across all retries of
     // this logical operation (plan §3.9 / §4.9).
@@ -101,6 +180,7 @@ class JourneyNotifier extends StateNotifier<JourneyState> {
         indexNumber: indexNumber,
         examType: examType,
         examYear: examYear,
+        checkNow: checkNow,
       );
       state = JourneyState(transactionId: init.transactionId);
       _sub = _api.transactionStages(init.transactionId).listen(

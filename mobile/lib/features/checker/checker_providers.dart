@@ -196,6 +196,9 @@ class CheckerPurchaseNotifier extends StateNotifier<CheckerPurchaseState> {
         indexNumber: indexNumber,
         examType: examType,
         examYear: examYear,
+        // The backend prices the purchase from this flag (ADR-002), so the
+        // amount charged is the amount this screen quoted for the toggle.
+        checkNow: checkNow,
       );
       state = CheckerPurchaseState(
         stage: CheckerPurchaseStage.provisioning,

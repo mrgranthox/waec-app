@@ -280,14 +280,18 @@ void main() {
         );
       });
 
-      test('display falls back to GHS 20.00 for non-positive amount', () {
+      test('display falls back to the standard checker fee for non-positive amount',
+          () {
+        // Never "GHS 0.00": a zero/negative payload from the config endpoint
+        // must still render an actionable price. The fallback is the checker
+        // fee from ADR-002.
         expect(
           const Price(amountPesewas: 0, currency: 'GHS').display,
-          equals('GHS 20.00'),
+          equals('GHS 26.00'),
         );
         expect(
           const Price(amountPesewas: -100, currency: 'GHS').display,
-          equals('GHS 20.00'),
+          equals('GHS 26.00'),
         );
       });
     });

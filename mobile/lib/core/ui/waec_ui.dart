@@ -96,7 +96,18 @@ class WaecNavyHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         color: const Color(0xFF0A2540),
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+        // The status-bar inset is absorbed *here* rather than by a `SafeArea`
+        // above, so the navy reaches the very top of the screen (y = 0) and the
+        // pixels behind the system bar are the brand colour. `statusBarColor`
+        // cannot achieve this on its own: it is ignored in edge-to-edge mode
+        // (Android 15+, and always on iOS), where the bar is transparent and
+        // simply shows whatever widget is painted behind it.
+        padding: EdgeInsets.fromLTRB(
+          24,
+          16 + MediaQuery.paddingOf(context).top,
+          24,
+          16,
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

@@ -40,12 +40,22 @@ class AboutScreen extends ConsumerWidget {
     final brand = BrandScope.of(context);
     final mono = WaecTheme.monoNum(10, brand.teal);
     return Scaffold(
+      backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy header below.
+        top: false,
         child: ListView(
           padding: const EdgeInsets.only(bottom: WaecSpacing.xl),
           children: [
             Container(
-              padding: const EdgeInsets.symmetric(vertical: WaecSpacing.lg),
+              // Status-bar inset absorbed here so the navy band reaches the top
+              // edge of the screen rather than stopping below the system bar.
+              padding: EdgeInsets.fromLTRB(
+                0,
+                WaecSpacing.lg + MediaQuery.paddingOf(context).top,
+                0,
+                WaecSpacing.lg,
+              ),
               color: WaecColors.navy,
               child: Column(
                 children: [
@@ -412,6 +422,11 @@ class _BiometricToggleRow extends ConsumerWidget {
     final controller = ref.read(authControllerProvider.notifier);
     final session = state.session;
     final capable = state.capability.canUseBiometricLogin;
+    // Session flag drives the switch: it says whether this launch's persisted
+    // session unlocked the fast path. The device-level enrolment record
+    // (state.biometricEnrolled) survives sign-out separately and drives the
+    // sign-in screen's fingerprint offer — session vs device-enrolment stay
+    // separate by design.
     final enabled = session?.biometricEnabled ?? false;
 
     if (!capable) {
@@ -451,9 +466,26 @@ class _BiometricToggleRow extends ConsumerWidget {
               : (v) async {
                   if (v) {
                     await controller.enableBiometrics();
-                  } else {
-                    await controller.disableBiometrics();
+                    return;
                   }
+                  // Turning the protection *off* is confirmed with a fresh
+                  // fingerprint: it is the one action an unauthorised person
+                  // holding an unlocked phone would want to take. A cancelled or
+                  // failed prompt leaves the switch on and explains why.
+                  final outcome = await controller.disableBiometrics();
+                  if (outcome == null || outcome.isSuccess || !context.mounted) {
+                    return;
+                  }
+                  final message = biometricMessageFor(outcome);
+                  if (message == null) return;
+                  ScaffoldMessenger.of(context)
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(
+                      SnackBar(
+                        key: const Key('about-biometric-off-cancelled'),
+                        content: Text(message),
+                      ),
+                    );
                 },
         ),
       ],

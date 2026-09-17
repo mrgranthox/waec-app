@@ -182,6 +182,47 @@ class AuthController extends StateNotifier<AuthState> {
   /// their password — as though the account had only just been created.
   final BiometricEnrolmentStore _enrolments;
 
+  /// Builds the next [AuthState], carrying over every field a transition should
+  /// preserve unless the caller explicitly overrides it.
+  ///
+  /// This exists because hand-written `AuthState(...)` constructions each listed
+  /// only the fields that transition cared about, so any newcomer was silently
+  /// dropped by the ones that forgot it. `biometricEnrolled` was the casualty
+  /// that mattered: `goToSignUp()` / `goToSignIn()` reset it to false, so the
+  /// sign-in screen's "Use Fingerprint / Face ID" button vanished the moment the
+  /// candidate visited the sign-up form and came back. Routing every transition
+  /// through one builder makes that whole class of bug impossible to reintroduce.
+  ///
+  /// `error` and `lastBiometricOutcome` default to null: a fresh transition
+  /// clears the previous attempt's banner.
+  AuthState _resume({
+    AuthStage? stage,
+    AuthSession? session,
+    bool clearSession = false,
+    bool busy = false,
+    String? error,
+    AuthFailureKind? errorKind,
+    BiometricCapability? capability,
+    BiometricOutcome? lastBiometricOutcome,
+    String? rememberedIndex,
+    bool clearRememberedIndex = false,
+    bool? offlineFallbackUsed,
+    bool? biometricEnrolled,
+  }) => AuthState(
+    stage: stage ?? state.stage,
+    session: clearSession ? null : (session ?? state.session),
+    busy: busy,
+    error: error,
+    errorKind: errorKind,
+    capability: capability ?? state.capability,
+    lastBiometricOutcome: lastBiometricOutcome,
+    rememberedIndex: clearRememberedIndex
+        ? null
+        : (rememberedIndex ?? state.rememberedIndex),
+    offlineFallbackUsed: offlineFallbackUsed ?? state.offlineFallbackUsed,
+    biometricEnrolled: biometricEnrolled ?? state.biometricEnrolled,
+  );
+
   /// Resolves the launch stage. Safe to call again (e.g. after the candidate
   /// enrols a fingerprint in system settings and returns to the app).
   Future<void> boot() async {
@@ -201,63 +242,72 @@ class AuthController extends StateNotifier<AuthState> {
         (enrolled || stored.biometricEnabled);
 
     if (mayUnlock) {
-      state = AuthState(
+      state = _resume(
         stage: AuthStage.biometricUnlock,
         session: stored,
         capability: capability,
         rememberedIndex: stored.indexNumber,
+        biometricEnrolled: true,
       );
       return;
     }
 
     final knownIndex = remembered ?? stored?.indexNumber;
     if (knownIndex != null) {
-      state = AuthState(
+      final enrolledOnDevice =
+          capability.canUseBiometricLogin &&
+          await _enrolments.isEnrolled(knownIndex);
+      state = _resume(
         stage: AuthStage.signIn,
+        // A deliberately signed-out device keeps no session, so the sign-in
+        // form is the right landing spot. The fingerprint button is offered
+        // only when a tap can actually deliver: the account is enrolled AND —
+        // with no session to restore — a usable unlock record exists for the
+        // refresh exchange. Without the record check, a device whose record
+        // was never usable (offline-fallback sign-ins carry no refresh token)
+        // advertised a button that could only ever fail.
+        session: stored,
         capability: capability,
         rememberedIndex: knownIndex,
-        // Tells the sign-in screen it may show "Sign in with fingerprint"
-        // once a session exists to unlock.
         biometricEnrolled:
-            capability.canUseBiometricLogin &&
-            await _enrolments.isEnrolled(knownIndex),
+            enrolledOnDevice &&
+            (stored != null || await _store.readUnlockRecord() != null),
       );
       return;
     }
 
-    state = AuthState(stage: AuthStage.signUp, capability: capability);
+    state = _resume(
+      stage: AuthStage.signUp,
+      capability: capability,
+      clearSession: true,
+      clearRememberedIndex: true,
+      biometricEnrolled: false,
+    );
   }
 
   /// Re-probes capability without changing the stage — used when returning
   /// from system settings.
   Future<void> refreshCapability() async {
     final capability = await _biometrics.capability();
-    state = AuthState(
-      stage: state.stage,
-      session: state.session,
+    state = _resume(
       capability: capability,
-      rememberedIndex: state.rememberedIndex,
-      offlineFallbackUsed: state.offlineFallbackUsed,
+      // Capability is precisely what decides whether the offer is still valid.
+      biometricEnrolled:
+          capability.canUseBiometricLogin &&
+          (state.rememberedIndex != null
+              ? await _enrolments.isEnrolled(state.rememberedIndex!)
+              : false),
     );
   }
 
   /// Manual switch to the sign-in form ("Already registered? Sign in").
   void goToSignIn() {
-    state = AuthState(
-      stage: AuthStage.signIn,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      session: state.session,
-    );
+    state = _resume(stage: AuthStage.signIn);
   }
 
   /// Manual switch to the sign-up form ("New here? Create an account").
   void goToSignUp() {
-    state = AuthState(
-      stage: AuthStage.signUp,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-    );
+    state = _resume(stage: AuthStage.signUp);
   }
 
   /// Registers a new account, then lands on [AuthStage.biometricEnroll] when
@@ -269,12 +319,7 @@ class AuthController extends StateNotifier<AuthState> {
     required String password,
   }) async {
     if (state.busy) return;
-    state = AuthState(
-      stage: state.stage,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      busy: true,
-    );
+    state = _resume(busy: true);
 
     try {
       final session = await _api.register(
@@ -285,21 +330,12 @@ class AuthController extends StateNotifier<AuthState> {
     } on AuthException catch (e) {
       final offline = await _maybeOfflineSession(e, indexNumber);
       if (offline == null) {
-        state = AuthState(
-          stage: state.stage,
-          capability: state.capability,
-          rememberedIndex: state.rememberedIndex,
-          error: e.message,
-          errorKind: e.kind,
-        );
+        state = _resume(error: e.message, errorKind: e.kind);
         return;
       }
       await _afterCredentialSuccess(offline, offline: true);
     } on Object {
-      state = AuthState(
-        stage: state.stage,
-        capability: state.capability,
-        rememberedIndex: state.rememberedIndex,
+      state = _resume(
         error: 'Sign-up failed. Please try again.',
         errorKind: AuthFailureKind.unknown,
       );
@@ -312,12 +348,7 @@ class AuthController extends StateNotifier<AuthState> {
     required String password,
   }) async {
     if (state.busy) return;
-    state = AuthState(
-      stage: state.stage,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      busy: true,
-    );
+    state = _resume(busy: true);
 
     try {
       final session = await _api.login(
@@ -328,21 +359,12 @@ class AuthController extends StateNotifier<AuthState> {
     } on AuthException catch (e) {
       final offline = await _maybeOfflineSession(e, indexNumber);
       if (offline == null) {
-        state = AuthState(
-          stage: state.stage,
-          capability: state.capability,
-          rememberedIndex: state.rememberedIndex,
-          error: e.message,
-          errorKind: e.kind,
-        );
+        state = _resume(error: e.message, errorKind: e.kind);
         return;
       }
       await _afterCredentialSuccess(offline, offline: true);
     } on Object {
-      state = AuthState(
-        stage: state.stage,
-        capability: state.capability,
-        rememberedIndex: state.rememberedIndex,
+      state = _resume(
         error: 'Sign-in failed. Please try again.',
         errorKind: AuthFailureKind.unknown,
       );
@@ -371,32 +393,38 @@ class AuthController extends StateNotifier<AuthState> {
     await _store.write(restored);
 
     if (alreadyEnrolled) {
-      state = AuthState(
+      state = _resume(
         stage: AuthStage.authenticated,
         session: restored,
-        capability: state.capability,
         rememberedIndex: restored.indexNumber,
         offlineFallbackUsed: offline,
         biometricEnrolled: true,
+      );
+      // The enrolment survived, so keep the unlock record in step with it: this
+      // is what lets the candidate sign out and still use the fingerprint button
+      // on the sign-in screen.
+      await _store.writeUnlockRecord(
+        BiometricUnlockRecord(
+          indexNumber: restored.indexNumber,
+          refreshToken: restored.refreshToken,
+        ),
       );
       return;
     }
 
     if (state.capability.canUseBiometricLogin) {
-      state = AuthState(
+      state = _resume(
         stage: AuthStage.biometricEnroll,
         session: restored,
-        capability: state.capability,
         rememberedIndex: restored.indexNumber,
         offlineFallbackUsed: offline,
       );
       return;
     }
 
-    state = AuthState(
+    state = _resume(
       stage: AuthStage.authenticated,
       session: restored,
-      capability: state.capability,
       rememberedIndex: restored.indexNumber,
       offlineFallbackUsed: offline,
     );
@@ -427,25 +455,54 @@ class AuthController extends StateNotifier<AuthState> {
     );
   }
 
-  /// Runs the fingerprint prompt for the stored session (plan §3.2).
+  /// Runs the fingerprint prompt and, on success, gets the candidate signed in.
   ///
-  /// On success the stored session is restored and the candidate lands in the
-  /// shell. On any non-success the state records the outcome so the screen can
-  /// either explain a lockout or drop to the password form — the plan's
-  /// "biometric fallback to PIN".
+  /// Two sources can authorise the unlock:
+  /// - a **live/stored session** (a cold launch with a fingerprint-enabled
+  ///   session) — restored as-is;
+  /// - a **biometric unlock record** (a deliberately signed-out device) — the
+  ///   prompt releases the refresh token, which is exchanged for a fresh
+  ///   session. Without this second source the button on the sign-in screen
+  ///   after a sign-out had nothing to unlock, so it appeared to do nothing.
+  ///
+  /// On any non-success the state records the outcome so the screen can either
+  /// explain a lockout or drop to the password form — the plan's "biometric
+  /// fallback to PIN".
   Future<void> unlockWithBiometrics() async {
     final stored = state.session ?? await _store.read();
-    if (stored == null) {
-      await boot();
+    if (stored != null) {
+      await _unlockStoredSession(stored);
       return;
     }
 
-    state = AuthState(
-      stage: state.stage,
+    final record = await _store.readUnlockRecord();
+    if (record == null) {
+      // Nothing on this device can authorise a fingerprint sign-in. Say so,
+      // instead of leaving the candidate tapping a button that never responds.
+      if (state.stage == AuthStage.biometricUnlock) {
+        // A fingerprint-gated launch that lost its session: re-resolve the stage
+        // rather than stranding the user on a screen with no way forward.
+        await boot();
+        return;
+      }
+      state = _resume(
+        stage: AuthStage.signIn,
+        error: 'Fingerprint sign-in is not ready for this account on this '
+            'device. Sign in with your password, then sign out once — the '
+            'fingerprint button will then sign you in.',
+        errorKind: AuthFailureKind.unknown,
+      );
+      return;
+    }
+
+    await _unlockFromRecord(record);
+  }
+
+  /// Fingerprint-gated restore of a session that is already on the device.
+  Future<void> _unlockStoredSession(AuthSession stored) async {
+    state = _resume(
       session: stored,
-      capability: state.capability,
       rememberedIndex: stored.indexNumber,
-      offlineFallbackUsed: state.offlineFallbackUsed,
       busy: true,
     );
 
@@ -454,28 +511,111 @@ class AuthController extends StateNotifier<AuthState> {
     );
 
     if (outcome.isSuccess) {
-      state = AuthState(
+      state = _resume(
         stage: AuthStage.authenticated,
         session: stored,
-        capability: state.capability,
         rememberedIndex: stored.indexNumber,
-        offlineFallbackUsed: state.offlineFallbackUsed,
+        biometricEnrolled: true,
       );
       return;
     }
 
-    state = AuthState(
+    state = _resume(
       // Stay on the unlock screen for lockouts (retry later); otherwise fall
       // back to the password form.
       stage: outcome.shouldOfferPasswordFallback
           ? AuthStage.signIn
           : AuthStage.biometricUnlock,
       session: stored,
-      capability: state.capability,
       rememberedIndex: stored.indexNumber,
-      offlineFallbackUsed: state.offlineFallbackUsed,
       lastBiometricOutcome: outcome,
       error: biometricMessageFor(outcome),
+    );
+  }
+
+  /// Fingerprint sign-in for a signed-out device (Use Case 2 of the fingerprint
+  /// plan): the prompt releases the refresh token, the server issues a session.
+  ///
+  /// The fingerprint is the *local* gate; the refresh token is what actually
+  /// proves the identity to the backend. That is why a successful prompt alone
+  /// never admits anyone in release builds — the exchange has to succeed too
+  /// (Hard Rule 5).
+  Future<void> _unlockFromRecord(BiometricUnlockRecord record) async {
+    state = _resume(busy: true);
+
+    final outcome = await _biometrics.authenticate(
+      reason: 'Sign in to WAEC Direct with your fingerprint',
+    );
+
+    if (!outcome.isSuccess) {
+      state = _resume(
+        stage: AuthStage.signIn,
+        lastBiometricOutcome: outcome,
+        error: biometricMessageFor(outcome),
+      );
+      return;
+    }
+
+    try {
+      final session = await _api.refresh(
+        indexNumber: record.indexNumber,
+        refreshToken: record.refreshToken,
+      );
+      final restored = session.copyWith(biometricEnabled: true);
+      await _store.write(restored);
+      await _store.writeRememberedIndex(restored.indexNumber);
+      await _store.writeUnlockRecord(
+        BiometricUnlockRecord(
+          indexNumber: restored.indexNumber,
+          // A rotated refresh token: keep the newest one so the next sign-out
+          // stores a usable record.
+          refreshToken: restored.refreshToken,
+        ),
+      );
+      state = _resume(
+        stage: AuthStage.authenticated,
+        session: restored,
+        rememberedIndex: restored.indexNumber,
+        biometricEnrolled: true,
+      );
+    } catch (error) {
+      final offline = _offlineUnlockSession(record);
+      if (offline != null) {
+        await _store.write(offline);
+        state = _resume(
+          stage: AuthStage.authenticated,
+          session: offline,
+          rememberedIndex: offline.indexNumber,
+          offlineFallbackUsed: true,
+          biometricEnrolled: true,
+        );
+        return;
+      }
+      // Release builds land here: the sensor said yes but the server could not
+      // be reached, so the candidate falls back to their password. Fail closed.
+      state = _resume(
+        stage: AuthStage.signIn,
+        error: 'Fingerprint unlock could not reach WAEC. '
+            'Sign in with your password.',
+        errorKind: AuthFailureKind.unreachable,
+      );
+    }
+  }
+
+  /// On-device session for a successful fingerprint unlock whose token exchange
+  /// could not complete. Debug/profile only (Hard Rule 5); null in release.
+  AuthSession? _offlineUnlockSession(BiometricUnlockRecord record) {
+    if (!_allowOfflineFallback) return null;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return AuthSession(
+      indexNumber: record.indexNumber,
+      userId: '',
+      accessToken: '',
+      refreshToken: record.refreshToken,
+      accessExpiresAtUnix: now + offlineSessionTtlSeconds,
+      issuedAtUnix: now,
+      source: AuthSessionSource.local,
+      biometricEnabled: true,
     );
   }
 
@@ -489,26 +629,16 @@ class AuthController extends StateNotifier<AuthState> {
     final session = state.session;
     if (session == null) return;
 
-    state = AuthState(
-      stage: state.stage,
-      session: session,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      offlineFallbackUsed: state.offlineFallbackUsed,
-      busy: true,
-    );
+    state = _resume(session: session, busy: true);
 
     final outcome = await _biometrics.authenticate(
       reason: 'Confirm your fingerprint to enable quick unlock',
     );
 
     if (!outcome.isSuccess) {
-      state = AuthState(
+      state = _resume(
         stage: AuthStage.biometricEnroll,
         session: session,
-        capability: state.capability,
-        rememberedIndex: state.rememberedIndex,
-        offlineFallbackUsed: state.offlineFallbackUsed,
         lastBiometricOutcome: outcome,
         error: biometricMessageFor(outcome),
       );
@@ -521,6 +651,15 @@ class AuthController extends StateNotifier<AuthState> {
     // Persist the enrolment as a device+account binding so it outlives the
     // session. Without this the opt-in dies at the next sign-out.
     await _enrolments.enroll(enabled.indexNumber);
+
+    // And keep a record the sign-in screen can spend after a sign-out, so
+    // "Use Fingerprint / Face ID" has something to exchange for a session.
+    await _store.writeUnlockRecord(
+      BiometricUnlockRecord(
+        indexNumber: enabled.indexNumber,
+        refreshToken: enabled.refreshToken,
+      ),
+    );
 
     // Server-side binding is fire-and-forget: the on-device unlock already
     // works, and a facade outage must not strand the candidate on this screen.
@@ -535,12 +674,10 @@ class AuthController extends StateNotifier<AuthState> {
       );
     }
 
-    state = AuthState(
+    state = _resume(
       stage: AuthStage.authenticated,
       session: enabled,
-      capability: state.capability,
       rememberedIndex: enabled.indexNumber,
-      offlineFallbackUsed: state.offlineFallbackUsed,
       biometricEnrolled: true,
     );
   }
@@ -549,19 +686,37 @@ class AuthController extends StateNotifier<AuthState> {
   void declineBiometrics() {
     final session = state.session;
     if (session == null) return;
-    state = AuthState(
+    state = _resume(
       stage: AuthStage.authenticated,
       session: session,
-      capability: state.capability,
       rememberedIndex: session.indexNumber,
-      offlineFallbackUsed: state.offlineFallbackUsed,
     );
   }
 
   /// Turns fingerprint unlock off and drops the stored session, so the next
   /// launch requires the password again. The remembered index is kept.
-  Future<void> disableBiometrics() async {
+  ///
+  /// **Requires a fresh fingerprint to confirm.** Turning the protection off is
+  /// exactly the action an unauthorised person holding an unlocked phone would
+  /// want to take, so it is gated the same way the fast path itself is. A failed
+  /// or cancelled prompt changes nothing.
+  ///
+  /// Returns the outcome so the caller can explain a cancellation inline. A
+  /// switch's `onChanged` is `void`, so it is the screen's job to await this.
+  Future<BiometricOutcome?> disableBiometrics() async {
     final session = state.session;
+
+    final outcome = await _biometrics.authenticate(
+      reason: 'Confirm your fingerprint to turn off quick unlock',
+    );
+    if (!outcome.isSuccess) {
+      state = _resume(
+        lastBiometricOutcome: outcome,
+        error: biometricMessageFor(outcome),
+      );
+      return outcome;
+    }
+
     if (session != null) {
       await _store.write(session.copyWith(biometricEnabled: false));
       // Opt-out must remove the device+account binding, otherwise the next
@@ -570,14 +725,13 @@ class AuthController extends StateNotifier<AuthState> {
       await _enrolments.revoke(session.indexNumber);
     }
     await _store.clear();
-    state = AuthState(
-      stage: state.stage,
+    // The unlock record is the fingerprint sign-in; an opt-out revokes it too.
+    await _store.clearUnlockRecord();
+    state = _resume(
       session: session?.copyWith(biometricEnabled: false),
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      offlineFallbackUsed: state.offlineFallbackUsed,
       biometricEnrolled: false,
     );
+    return outcome;
   }
 
   /// Ends the session but keeps the remembered index (next launch -> sign-in).
@@ -587,37 +741,73 @@ class AuthController extends StateNotifier<AuthState> {
   /// what forced candidates to re-enrol after every sign-out. The next password
   /// sign-in restores the fast path from the enrolment record.
   Future<void> signOut() async {
-    final remembered = state.rememberedIndex;
+    final session = state.session;
+    // The account identity must not depend on the remembered index having been
+    // set: a sign-up → enable → sign-out pass reached this line with
+    // `rememberedIndex` null, which silently downgraded `enrolled` to false and
+    // threw away the binding. The session knows the account too.
+    final remembered = state.rememberedIndex ?? session?.indexNumber;
+    final enrolled =
+        remembered != null && await _enrolments.isEnrolled(remembered);
+
+    // Sign-out destroys the session and its tokens. What it must *not* destroy
+    // is the candidate's ability to use the fingerprint button on the sign-in
+    // screen, so an enrolled account leaves behind the minimum needed to mint a
+    // new session after a successful prompt: the index and the refresh token,
+    // under their own secure key (see [BiometricUnlockRecord]).
+    if (enrolled && session != null) {
+      await _store.writeUnlockRecord(
+        BiometricUnlockRecord(
+          indexNumber: remembered,
+          refreshToken: session.refreshToken,
+        ),
+      );
+    } else if (!enrolled) {
+      // Nothing is enrolled, so no fingerprint sign-in may be offered: drop any
+      // record left over from a previous account on this device. (Enrolled but
+      // session-less — a torn state — keeps any existing record: the binding is
+      // real, and a record written by an earlier sign-out stays valid.)
+      await _store.clearUnlockRecord();
+    }
+
     await _store.clear();
-    state = AuthState(
+
+    // The button's promise must match what a tap can actually deliver: it
+    // signs in by exchanging the unlock record for a fresh session. When the
+    // session's refresh token was empty — the offline-fallback sessions debug
+    // builds mint when the backend is unreachable — the write above was
+    // refused, and offering the button would only ever produce an error.
+    // Reading back keeps promise and reality in lock-step: a record left by an
+    // earlier, fully-online sign-out keeps the button available.
+    final record = await _store.readUnlockRecord();
+    state = _resume(
       stage: AuthStage.signIn,
-      capability: state.capability,
+      clearSession: true,
       rememberedIndex: remembered,
-      biometricEnrolled:
-          remembered != null && await _enrolments.isEnrolled(remembered),
+      biometricEnrolled: record != null,
     );
   }
 
   /// Forgets this device entirely (next launch -> sign-up).
   ///
   /// Unlike [signOut], this *does* revoke enrolment: the candidate asked the
-  /// device to forget them, so the fingerprint binding goes too.
+  /// device to forget them, so the fingerprint binding — and the unlock record
+  /// that goes with it — goes too.
   Future<void> forgetDevice() async {
     await _store.clearAll();
+    await _store.clearUnlockRecord();
     await _enrolments.revokeAll();
-    state = AuthState(stage: AuthStage.signUp, capability: state.capability);
+    state = _resume(
+      stage: AuthStage.signUp,
+      clearSession: true,
+      clearRememberedIndex: true,
+      biometricEnrolled: false,
+    );
   }
 
   /// Drops the inline error banner without changing the stage.
   void clearError() {
-    state = AuthState(
-      stage: state.stage,
-      session: state.session,
-      capability: state.capability,
-      rememberedIndex: state.rememberedIndex,
-      offlineFallbackUsed: state.offlineFallbackUsed,
-      lastBiometricOutcome: state.lastBiometricOutcome,
-    );
+    state = _resume(lastBiometricOutcome: state.lastBiometricOutcome);
   }
 }
 

@@ -58,6 +58,10 @@ class _FakeWaecApi implements WaecApi {
   int redeemCalls = 0;
   final List<String> idempotencyKeys = <String>[];
 
+  /// The `check_now` flag presented to each [initCharge] (ADR-002), so a test
+  /// can prove the toggle reached the charge rather than only the UI.
+  final List<bool> checkNowFlags = <bool>[];
+
   /// Serials/PINs handed to [redeemChecker] — asserted against state and error
   /// copy to prove Hard Rule 1 holds end to end.
   final List<String> redeemedSerials = <String>[];
@@ -79,9 +83,11 @@ class _FakeWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) async {
     initChargeCalls++;
     idempotencyKeys.add(idempotencyKey);
+    checkNowFlags.add(checkNow);
     if (throwOnCharge != null) throw throwOnCharge!;
     return charge ?? _defaultCharge;
   }
@@ -111,8 +117,10 @@ class _FakeWaecApi implements WaecApi {
   }
 
   @override
-  Future<Price> getPricing(ExamType examType) async =>
-      const Price(amountPesewas: 2000, currency: 'GHS');
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  }) async => const Price(amountPesewas: 2000, currency: 'GHS');
 
   static const _session = AuthSession(
     indexNumber: _index,
@@ -498,6 +506,47 @@ void main() {
 
         // ...and the vault state was refreshed for the History tab.
         expect(c.read(checkerVaultProvider).checkers.length, 1);
+      });
+
+      test('the check-now flag reaches the charge (ADR-002)', () async {
+        // The screen quotes the combined rate when "Also check my results now"
+        // is on. The flag must therefore travel with the charge, or the
+        // candidate would be quoted one figure and billed another.
+        final c = container(vault: archive);
+        await c.read(checkerPurchaseProvider.notifier).buy(
+              indexNumber: _index,
+              examType: ExamType.bece,
+              examYear: '2025',
+              checkNow: true,
+            );
+        expect(api.checkNowFlags, <bool>[true]);
+        // And because the checker is spent in the same pass, the purchase runs
+        // straight through to a completed redemption.
+        expect(api.redeemCalls, 1);
+        expect(
+          c.read(checkerPurchaseProvider).stage,
+          CheckerPurchaseStage.complete,
+        );
+      });
+
+      test('a checker kept for later is charged the checker-only rate',
+          () async {
+        final c = container(vault: archive);
+        await c.read(checkerPurchaseProvider.notifier).buy(
+              indexNumber: _index,
+              examType: ExamType.bece,
+              examYear: '2025',
+              checkNow: false,
+            );
+        expect(api.checkNowFlags, <bool>[false]);
+        // Off: nothing is spent in this pass, so the checker stays in the vault
+        // ready to be used later.
+        expect(api.redeemCalls, 0);
+        expect(
+          c.read(checkerPurchaseProvider).stage,
+          CheckerPurchaseStage.ready,
+        );
+        expect(c.read(checkerPurchaseProvider).hasVaultedChecker, isTrue);
       });
 
       test('state never carries the serial or PIN', () async {

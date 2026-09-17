@@ -27,66 +27,93 @@ class EncryptedResultArchive {
   static const _checkers = 'checkers';
   static const _meta = 'meta';
 
-  /// Schema 2 added the checker vault (ADR-001). Never reuse a version number:
-  /// an existing install must run `onUpgrade` so its snapshot history survives.
-  static const _schemaVersion = 2;
+  /// Schema 2 added the checker vault (ADR-001). Schema 3 repairs installs whose
+  /// database reached v2 *without* the vault table: the recorded version was
+  /// already 2, so `onUpgrade` never ran again and the vault stayed permanently
+  /// unopenable — which surfaced to the candidate as "local storage is
+  /// unavailable on this device", with no way out short of reinstalling.
+  ///
+  /// Never reuse a version number: an existing install must run `onUpgrade` so
+  /// its snapshot history survives.
+  static const _schemaVersion = 3;
 
   /// Open (or create) the archive at [dbPath].
+  ///
+  /// Schema convergence happens on **every** open, not only inside `onCreate` /
+  /// `onUpgrade`. A recorded version is not proof that the matching tables exist:
+  /// an interrupted upgrade, a half-written file, or an install that reached v2
+  /// before the vault table was ever added can all leave a database that claims
+  /// the current version and is still missing tables. Trusting the stamp is what
+  /// left those installs reporting "local storage is unavailable on this device"
+  /// on every launch, with no way out short of reinstalling. `IF NOT EXISTS` DDL
+  /// is idempotent, so converging unconditionally costs one cheap statement per
+  /// table and cannot lose data.
   static Future<EncryptedResultArchive> open(String dbPath) async {
     final db = await openDatabase(
       dbPath,
       version: _schemaVersion,
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE $_meta (
-            k TEXT PRIMARY KEY, v TEXT NOT NULL
-          )''');
-        await db.execute('''
-          CREATE TABLE $_table (
-            id TEXT PRIMARY KEY,
-            index_number TEXT NOT NULL,
-            exam_type TEXT NOT NULL,
-            exam_year TEXT NOT NULL,
-            created_unix INTEGER NOT NULL,
-            blob BLOB NOT NULL
-          )''');
-        await db.execute(
-            'CREATE INDEX idx_snap_idx ON $_table(index_number, created_unix DESC)');
-        await _createCheckerTable(db);
-        // Device-random salt for key derivation — never leaves the device.
-        final rng = Random.secure();
-        final salt = List<int>.generate(32, (_) => rng.nextInt(256));
-        await db.insert(_meta, {'k': 'salt', 'v': base64Encode(salt)});
-      },
-      onUpgrade: (db, oldVersion, newVersion) async {
-        // v1 -> v2: the checker vault lands. Snapshot rows are untouched (the
-        // key derivation and envelope are unchanged), so upgrading never costs
-        // the user their saved history.
-        if (oldVersion < 2) await _createCheckerTable(db);
-      },
+      // The callbacks only stamp the version. The schema and the salt are built
+      // below, after the database is open, so that (a) a wrong stamp cannot
+      // strand a database without its tables and (b) the salt is never written
+      // before the table that holds it exists.
+      onCreate: (db, version) async {},
+      onUpgrade: (db, oldVersion, newVersion) async {},
     );
+
+    await _ensureSchema(db);
 
     // Overwrite deleted content with zeros instead of orphaning it in free
     // pages, so `deleteChecker`'s zero-out is durable on disk rather than only
     // logical (ADR-001). Set before the first write so every later DELETE
     // benefits.
-    await db.execute('PRAGMA secure_delete = ON');
+    //
+    // Sent through `rawQuery`, never `execute`: on Android, SQLiteDatabase
+    // classifies every PRAGMA as a query and rejects it from execSQL with
+    // "Queries can be performed using SQLiteDatabase query or rawQuery methods
+    // only" — even though the pragma itself succeeds (SQLITE_OK). That refusal
+    // is what made every launch of the released build report "local storage is
+    // unavailable on this device": both open attempts (original and
+    // quarantined retry) died on this one line. The host-side ffi driver
+    // accepts the statement, which is exactly why the tests stayed green while
+    // the device was broken. Best-effort regardless: the pragma is a
+    // durability nicety, not a correctness requirement, so a platform that
+    // will not have it still gets a working vault.
+    try {
+      await db.rawQuery('PRAGMA secure_delete = ON');
+    } on Object {
+      // Ignore: the archive is fully usable without the pragma.
+    }
 
-    final rows = await db.query(_meta, where: 'k = ?', whereArgs: ['salt']);
-    final salt = base64Decode(rows.first['v'] as String);
+    // Reads the salt, generating one if it is missing or undecodable rather than
+    // throwing and leaving the whole vault unusable.
+    final salt = await _ensureSalt(db);
     return EncryptedResultArchive._(db, salt);
   }
 
-  /// The checker vault (ADR-001).
+  /// Create every table and index this schema needs, whether or not the database
+  /// already claimed to be at this version.
   ///
-  /// Note which columns are plaintext: row id, account, exam, status and
-  /// timestamps. None of them is the credential, so rendering the History list
-  /// needs no key material at all. `blob` is the only column that carries the
-  /// serial + PIN, encrypted with the same index-bound AES-256-GCM envelope as
-  /// a result snapshot.
-  static Future<void> _createCheckerTable(Database db) async {
+  /// `IF NOT EXISTS` throughout: the point is to converge any half-migrated
+  /// database onto a working schema, and re-running it on a healthy one is a
+  /// no-op.
+  static Future<void> _ensureSchema(Database db) async {
     await db.execute('''
-      CREATE TABLE $_checkers (
+      CREATE TABLE IF NOT EXISTS $_meta (
+        k TEXT PRIMARY KEY, v TEXT NOT NULL
+      )''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $_table (
+        id TEXT PRIMARY KEY,
+        index_number TEXT NOT NULL,
+        exam_type TEXT NOT NULL,
+        exam_year TEXT NOT NULL,
+        created_unix INTEGER NOT NULL,
+        blob BLOB NOT NULL
+      )''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_snap_idx ON $_table(index_number, created_unix DESC)');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $_checkers (
         id TEXT PRIMARY KEY,
         index_number TEXT NOT NULL,
         exam_type TEXT NOT NULL,
@@ -98,7 +125,43 @@ class EncryptedResultArchive {
         blob BLOB NOT NULL
       )''');
     await db.execute(
-        'CREATE INDEX idx_checker_idx ON $_checkers(index_number, purchased_unix DESC)');
+        'CREATE INDEX IF NOT EXISTS idx_checker_idx ON $_checkers(index_number, purchased_unix DESC)');
+  }
+
+  /// The device-random key-derivation salt, self-healing if it cannot be read.
+  ///
+  /// A database whose salt row is missing or undecodable cannot decrypt anything
+  /// it holds, so replacing it converts a permanently dead vault into an
+  /// empty-but-working one. That is strictly better than failing the whole open,
+  /// which denied the candidate even the parts of the app that do not need the
+  /// vault.
+  static Future<List<int>> _ensureSalt(Database db) async {
+    final rows = await db.query(_meta, where: 'k = ?', whereArgs: ['salt']);
+    if (rows.isNotEmpty) {
+      final raw = rows.first['v'];
+      if (raw is String && raw.isNotEmpty) {
+        try {
+          final decoded = base64Decode(raw);
+          if (decoded.length >= 32) return decoded;
+        } on FormatException {
+          // Truncated or tampered base64 — regenerate rather than throw.
+        }
+      }
+    }
+    return _writeFreshSalt(db);
+  }
+
+  /// Generate and persist a fresh salt, replacing any unusable row.
+  static Future<List<int>> _writeFreshSalt(Database db) async {
+    // Device-random salt for key derivation — never leaves the device.
+    final rng = Random.secure();
+    final salt = List<int>.generate(32, (_) => rng.nextInt(256));
+    await db.insert(
+      _meta,
+      {'k': 'salt', 'v': base64Encode(salt)},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    return salt;
   }
 
   /// Derive the AES key: SHA-256(seed || index) — binds the key to the

@@ -55,7 +55,11 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final price = ref.watch(priceProvider(_examType));
+    // The toggle is part of the price key, not a post-hoc adjustment: switching
+    // it reprices this screen from the server-config rate for the purchase
+    // actually being made (ADR-002).
+    final priceRequest = PriceRequest(examType: _examType, checkNow: _checkNow);
+    final price = ref.watch(priceProvider(priceRequest));
     final purchase = ref.watch(checkerPurchaseProvider);
 
     // A completed redemption means the journey is done: hand control back so the
@@ -67,11 +71,19 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
       }
     });
 
-    final displayPrice = price.valueOrNull ?? fallbackPrice;
+    // One value drives both the price card and the CTA. That is deliberate: it
+    // is what stops the card from still reading "..." while the button below it
+    // already shows a figure, and it means the amount quoted is the amount
+    // charged. The notifier guarantees a value (the documented offline price for
+    // this shape) from the first frame, so there is nothing to wait for.
+    final displayPrice =
+        price.valueOrNull ?? fallbackPriceFor(checkNow: _checkNow);
 
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy header below.
+        top: false,
         bottom: false,
         child: ListView(
           padding: const EdgeInsets.only(bottom: WaecSpacing.xl),
@@ -91,7 +103,7 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _priceCard(displayPrice, price.isLoading),
+                  _priceCard(displayPrice),
                   const SizedBox(height: 18),
                   _examTypeField(purchase),
                   const SizedBox(height: 14),
@@ -124,7 +136,11 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
   }
 
   /// Live price, presented as the single number that matters on this screen.
-  Widget _priceCard(Price price, bool loading) => Container(
+  ///
+  /// Never renders a placeholder: the value passed in is already resolved (the
+  /// live amount, or its documented offline equivalent), so the label and the
+  /// CTA can never disagree about what a checker costs.
+  Widget _priceCard(Price price) => Container(
     padding: const EdgeInsets.all(18),
     decoration: BoxDecoration(
       color: WaecColors.cardLight,
@@ -133,11 +149,11 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
     ),
     child: Row(
       children: [
-        const Expanded(
+        Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              const Text(
                 'One result checker',
                 style: TextStyle(
                   fontSize: 13,
@@ -145,16 +161,44 @@ class _BuyCheckerScreenState extends ConsumerState<BuyCheckerScreen> {
                   color: WaecColors.navy,
                 ),
               ),
-              SizedBox(height: 2),
-              Text(
+              const SizedBox(height: 2),
+              const Text(
                 'Covers one exam and year. Single use.',
                 style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
               ),
+              // Name the thing the extra money buys, so the jump from the
+              // checker-only rate to the combined rate is explained rather than
+              // surprising (ADR-002).
+              if (_checkNow) ...[
+                const SizedBox(height: 6),
+                Row(
+                  key: const Key('buy-checker-price-includes-check'),
+                  children: [
+                    const Icon(
+                      Icons.search,
+                      size: 13,
+                      color: Color(0xFF00856F),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Includes checking your result now.',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF0F766E),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
         Text(
-          loading ? '...' : price.display,
+          price.display,
+          key: const Key('buy-checker-price'),
           style: const TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w700,

@@ -68,6 +68,15 @@ class _FakeAuthApi implements WaecApi {
   int loginCalls = 0;
   int bindBiometricCalls = 0;
 
+  /// Fingerprint sign-in exchanges the stored refresh token for a session; these
+  /// record that the exchange happened (and with what).
+  int refreshCalls = 0;
+  String? refreshIndexSeen;
+  String? refreshTokenSeen;
+
+  /// When set, [refresh] throws it — the offline/unreachable case.
+  Object? refreshError;
+
   @override
   Future<AuthSession> register({
     required String indexNumber,
@@ -100,26 +109,35 @@ class _FakeAuthApi implements WaecApi {
   }
 
   @override
+  Future<AuthSession> refresh({
+    required String indexNumber,
+    required String refreshToken,
+  }) async {
+    refreshCalls++;
+    refreshIndexSeen = indexNumber;
+    refreshTokenSeen = refreshToken;
+    if (refreshError != null) throw refreshError!;
+    return session ??= _serverSession();
+  }
+
+  @override
   Future<ChargeInit> initCharge({
     required String idempotencyKey,
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) async => throw UnimplementedError('not used by these tests');
 
   @override
-  Future<Price> getPricing(ExamType examType) async =>
-      throw UnimplementedError('not used by these tests');
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  }) async => throw UnimplementedError('not used by these tests');
 
   @override
   Stream<TransactionStage> transactionStages(String transactionId) =>
       throw UnimplementedError('not used by these tests');
-
-  @override
-  Future<AuthSession> refresh({
-    required String indexNumber,
-    required String refreshToken,
-  }) async => throw UnimplementedError('not used by these tests');
 
   @override
   Future<CheckerRedemption> redeemChecker({
@@ -359,33 +377,68 @@ void main() {
       );
     });
 
-    test('a cold boot after sign-out offers fingerprint sign-in', () async {
-      // Simulates the next app launch: no session, but the enrolment and the
-      // remembered index persisted.
-      final store = InMemorySessionStore(rememberedIndex: _index);
-      final enrolments = InMemoryBiometricEnrolmentStore(
-        enrolled: <String>[_index],
-      );
+    test(
+      'a cold boot with an enrolment but NO unlock record does not offer the '
+      'fingerprint button',
+      () async {
+        // Simulates the next app launch: no session, but the enrolment and the
+        // remembered index persisted — and no unlock record (e.g. an older
+        // build, or sign-ins that never carried a refresh token). With no
+        // session to restore and no record to exchange, a tap on the button
+        // could only ever answer with an error, so the button is not offered.
+        final store = InMemorySessionStore(rememberedIndex: _index);
+        final enrolments = InMemoryBiometricEnrolmentStore(
+          enrolled: <String>[_index],
+        );
 
-      final c = await _controller(
-        store: store,
-        enrolments: enrolments,
-        biometrics: FakeBiometricAuthenticator(capable: _capable),
-      );
+        final c = await _controller(
+          store: store,
+          enrolments: enrolments,
+          biometrics: FakeBiometricAuthenticator(capable: _capable),
+        );
 
-      expect(
-        c.state.stage,
-        AuthStage.signIn,
-        reason: 'no session to unlock, so the password form is correct',
-      );
-      expect(c.state.biometricEnrolled, isTrue);
-      expect(
-        c.state.canOfferBiometricSignIn,
-        isTrue,
-        reason: 'the sign-in screen may show "Sign in with fingerprint"',
-      );
-      expect(c.state.rememberedIndex, _index);
-    });
+        expect(
+          c.state.stage,
+          AuthStage.signIn,
+          reason: 'no session to unlock, so the password form is correct',
+        );
+        expect(c.state.biometricEnrolled, isFalse);
+        expect(c.state.canOfferBiometricSignIn, isFalse);
+        // The form is still pre-filled for the password path.
+        expect(c.state.rememberedIndex, _index);
+      },
+    );
+
+    test(
+      'a cold boot with an enrolment AND a stored unlock record offers the '
+      'fingerprint button',
+      () async {
+        // The deliberate sign-out of an online session leaves the record
+        // behind; the next launch may show "Sign in with fingerprint".
+        final store = InMemorySessionStore(rememberedIndex: _index);
+        await store.writeUnlockRecord(
+          BiometricUnlockRecord(indexNumber: _index, refreshToken: 'rt'),
+        );
+        final enrolments = InMemoryBiometricEnrolmentStore(
+          enrolled: <String>[_index],
+        );
+
+        final c = await _controller(
+          store: store,
+          enrolments: enrolments,
+          biometrics: FakeBiometricAuthenticator(capable: _capable),
+        );
+
+        expect(c.state.stage, AuthStage.signIn);
+        expect(c.state.biometricEnrolled, isTrue);
+        expect(
+          c.state.canOfferBiometricSignIn,
+          isTrue,
+          reason: 'the sign-in screen may show "Sign in with fingerprint"',
+        );
+        expect(c.state.rememberedIndex, _index);
+      },
+    );
 
     test(
       'a cold boot with a live enrolled session goes to the unlock gate',
@@ -610,6 +663,24 @@ void main() {
       expect(kNavySystemBarStyle.systemNavigationBarColor, WaecColors.navy);
     });
 
+    test('the splash style paints white behind both bars', () {
+      // The native launch window (@color/splash = #FFFFFF) is white; the
+      // branded Flutter splash must carry the same white bars so the hand-off
+      // does not visibly flip white → navy mid-load.
+      expect(kSplashSystemBarStyle.statusBarColor, Colors.white);
+      expect(kSplashSystemBarStyle.systemNavigationBarColor, Colors.white);
+    });
+
+    test('splash icons are dark, because the bar background is light', () {
+      expect(kSplashSystemBarStyle.statusBarIconBrightness, Brightness.dark);
+      expect(
+        kSplashSystemBarStyle.systemNavigationBarIconBrightness,
+        Brightness.dark,
+      );
+      // iOS infers icon colour from the bar brightness: light bar → dark text.
+      expect(kSplashSystemBarStyle.statusBarBrightness, Brightness.light);
+    });
+
     test('icons are light, because the bar background is dark', () {
       expect(kNavySystemBarStyle.statusBarIconBrightness, Brightness.light);
       expect(
@@ -663,8 +734,60 @@ void main() {
     });
   });
 
-  group('Exam years reach the start of WAEC', () {
-    test('the floor is 1948, the year WAEC was established', () {
+  group('The fingerprint button only promises what a tap can deliver', () {
+    test(
+      'sign-out with an empty refresh token leaves NO fingerprint button',
+      () async {
+        // Debug builds mint offline-fallback sessions with no refresh token
+        // when the backend is unreachable. The unlock record write is
+        // correctly refused for those; offering the button anyway is what
+        // made it say "sign in with your password once to turn on fingerprint
+        // unlock" forever.
+        final store = InMemorySessionStore(
+          session: _serverSession().copyWith(refreshToken: ''),
+        );
+        await store.writeRememberedIndex(_index);
+        final enrolments = InMemoryBiometricEnrolmentStore(
+          enrolled: <String>[_index],
+        );
+
+        final c = await _controller(
+          store: store,
+          enrolments: enrolments,
+          biometrics: FakeBiometricAuthenticator(capable: _capable),
+        );
+
+        await c.signOut();
+
+        // Enrolment itself survives — the password fast path still works.
+        expect(await enrolments.isEnrolled(_index), isTrue);
+        // But the button must not promise an exchange that cannot happen.
+        expect(c.state.canOfferBiometricSignIn, isFalse);
+        expect(await store.readUnlockRecord(), isNull);
+      },
+    );
+
+    test('a real token keeps the button after sign-out', () async {
+      final store = InMemorySessionStore(session: _serverSession());
+      await store.writeRememberedIndex(_index);
+      final enrolments = InMemoryBiometricEnrolmentStore(
+        enrolled: <String>[_index],
+      );
+
+      final c = await _controller(
+        store: store,
+        enrolments: enrolments,
+        biometrics: FakeBiometricAuthenticator(capable: _capable),
+      );
+
+      await c.signOut();
+
+      expect(await store.readUnlockRecord(), isNotNull);
+      expect(c.state.canOfferBiometricSignIn, isTrue);
+    });
+  });
+
+  group('Exam years reach the start of WAEC', () {    test('the floor is 1948, the year WAEC was established', () {
       expect(kExamYearFloor, 1948);
       expect(kExamYears.last, '1948');
     });

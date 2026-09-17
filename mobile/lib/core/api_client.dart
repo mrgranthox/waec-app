@@ -13,14 +13,25 @@ abstract class WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   });
 
-  /// Live price from the backend config endpoint (dynamic GHS, plan §2.2).
+  /// Live price for a purchase from the backend config endpoint (dynamic GHS,
+  /// plan §2.2 / ADR-002).
   ///
-  /// Falls back to a safe default (GHS 20.00) if the endpoint is
-  /// unreachable, so the verification journey is never blocked by a missing
-  /// price (Paystack's checkout is the single source of truth for the amount).
-  Future<Price> getPricing(ExamType examType);
+  /// [checkNow] asks for the price of the purchase actually about to be made: a
+  /// checker kept for later, or a checker spent immediately — which also pays
+  /// for the retrieval. The server resolves one authoritative amount either way,
+  /// so the client renders it verbatim and the quoted figure cannot drift from
+  /// the charged one.
+  ///
+  /// Falls back to the documented offline price for the requested shape if the
+  /// endpoint is unreachable, so the journey is never blocked by a missing
+  /// price (Paystack's checkout remains the single source of truth).
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  });
 
   /// Live transaction stage stream: SSE with adaptive 2-second
   /// short-polling fallback (plan §3.4). Emits until terminal.
@@ -177,6 +188,20 @@ class CertPins {
   static const baseUrl = 'https://$apiHost';
 }
 
+/// Build-time API endpoint override, so a physical device can be pointed at a
+/// development backend that DNS cannot reach:
+///
+///     flutter run --dart-define=WAEC_API_HOST=192.168.1.20:8080
+///
+/// An override switches the scheme to plain http (a dev host on the LAN has no
+/// certificate to pin) and is a debug/testing affordance: production builds are
+/// built without the define and talk to [CertPins.apiHost] over https.
+const String waecApiHostOverride = String.fromEnvironment('WAEC_API_HOST');
+
+/// True when the app should talk to the overridden host instead of production.
+// `isNotEmpty` is not const-evaluable on a String; compare against '' instead.
+const bool kUsingDevApiHost = waecApiHostOverride != '';
+
 /// Channel init response from POST /v1/payment/charge.
 class ChargeInit {
   const ChargeInit({
@@ -244,10 +269,29 @@ class Price {
       ? 'GHS ${(amountPesewas / 100).toStringAsFixed(2)}'
       // Backend config returned a non-positive amount (unseeded row, zero fee,
       // or a malformed payload). Rather than ever showing "GHS 0.00", fall back
-      // to the standard single-result fee so the CTA stays actionable. The
+      // to the standard checker fee so the CTA stays actionable. The
       // authoritative amount is shown again on Paystack's checkout.
-      : 'GHS ${(2000 / 100).toStringAsFixed(2)}';
+      : fallbackCheckerPrice.display;
 }
+
+/// Offline-safe prices used when the pricing endpoint is unreachable, and as the
+/// value rendered before the first server response lands.
+///
+/// These mirror the seeded `pricing_config` rows (ADR-002) so the number on
+/// screen does not visibly change when the live response arrives:
+/// - [fallbackCheckerPrice] — a checker bought on its own (GHS 26.00).
+/// - [fallbackCheckNowPrice] — a checker spent immediately, retrieval included
+///   (GHS 36.00).
+const Price fallbackCheckerPrice = Price(amountPesewas: 2600, currency: 'GHS');
+const Price fallbackCheckNowPrice = Price(amountPesewas: 3600, currency: 'GHS');
+
+/// The offline-safe price for the purchase shape being made.
+///
+/// Always flag-aware: a caller that renders a "check now" purchase must use this
+/// rather than reaching for [fallbackCheckerPrice] directly, or the displayed
+/// figure would contradict the toggle the candidate just flipped.
+Price fallbackPriceFor({required bool checkNow}) =>
+    checkNow ? fallbackCheckNowPrice : fallbackCheckerPrice;
 
 /// Dio-backed client with pinned-SPKI verification, backoff with jitter,
 /// and idempotency headers preserved across retries (plan §3.9).
@@ -257,7 +301,13 @@ class HttpWaecApi implements WaecApi {
           dio ??
           Dio(
             BaseOptions(
-              baseUrl: baseUrl ?? CertPins.baseUrl,
+              // The dev-host override (dart-define) points the app at a plain
+              // http endpoint; production always uses the pinned https host.
+              baseUrl:
+                  baseUrl ??
+                  (kUsingDevApiHost
+                      ? 'http://$waecApiHostOverride'
+                      : CertPins.baseUrl),
               connectTimeout: const Duration(seconds: 10),
               // Payload budget: responses <10KB compressed at edge (§4.10)
               headers: {'Accept-Encoding': 'gzip, br'},
@@ -277,12 +327,20 @@ class HttpWaecApi implements WaecApi {
   static const _version = '0.1.0';
 
   @override
-  Future<Price> getPricing(ExamType examType) async {
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  }) async {
     try {
       final result = await retryWithBackoff<Map<String, dynamic>>(() async {
         final resp = await _dio.get<Map<String, dynamic>>(
           '/v1/payment/pricing',
-          queryParameters: {'exam_type': examType.code},
+          // `check_now` selects the checker-only or checker-and-retrieve rate,
+          // so this is the price of the purchase being made (ADR-002).
+          queryParameters: {
+            'exam_type': examType.code,
+            'check_now': checkNow,
+          },
         );
         return resp.data ?? <String, dynamic>{};
       });
@@ -294,9 +352,9 @@ class HttpWaecApi implements WaecApi {
         RetryExhausted(:final lastError) => throw lastError,
       };
     } on Object {
-      // Backend unreachable → use the standard single-result fee so the
-      // CTA is never stuck on "Price unavailable".
-      return const Price(amountPesewas: 2000, currency: 'GHS');
+      // Backend unreachable → use the documented offline price for this
+      // purchase shape so the CTA is never stuck on "Price unavailable".
+      return fallbackPriceFor(checkNow: checkNow);
     }
   }
 
@@ -306,6 +364,7 @@ class HttpWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) async {
     final result = await retryWithBackoff<Map<String, dynamic>>(() async {
       final resp = await _dio.post<Map<String, dynamic>>(
@@ -313,10 +372,13 @@ class HttpWaecApi implements WaecApi {
         options: Options(headers: {'X-Idempotency-Key': idempotencyKey}),
         // Payment method is chosen by the user on Paystack's hosted
         // checkout; the backend derives the channel from the charge result.
+        // `check_now` tells it to apply the checker-and-retrieve rate rather
+        // than the checker-only rate (ADR-002).
         data: {
           'index_number': indexNumber,
           'exam_type': examType.code,
           'exam_year': examYear,
+          'check_now': checkNow,
         },
       );
       return resp.data ?? <String, dynamic>{};
@@ -929,11 +991,20 @@ class MockWaecApi implements WaecApi {
       TransactionStage.waecRetrieval,
       TransactionStage.complete,
     ],
-    this.price = const Price(amountPesewas: 2000, currency: 'GHS'),
-  });
+    // The two launch rates (ADR-002) so tests exercise the same numbers the
+    // seeded `pricing_config` serves.
+    this.price = fallbackCheckerPrice,
+    Price? checkNowPrice,
+  }) : checkNowPrice = checkNowPrice ?? fallbackCheckNowPrice;
 
   final List<TransactionStage> stages;
+
+  /// Checker-only price (a checker kept for later).
   final Price price;
+
+  /// Checker-and-retrieve price (a checker spent immediately).
+  final Price checkNowPrice;
+
   final List<String> charges = [];
 
   // ── Auth simulation knobs ───────────────────────────────────────────────
@@ -974,6 +1045,14 @@ class MockWaecApi implements WaecApi {
   /// the only case the client may treat as retryable.
   bool redemptionUnreachable = false;
 
+  /// The `check_now` flag presented to each [initCharge], in call order. Lets a
+  /// test prove the toggle reached the backend rather than only the UI.
+  final List<bool> checkNowFlags = <bool>[];
+
+  /// The price for a purchase shape: checker-only or checker-and-retrieve
+  /// (ADR-002), mirroring the two `pricing_config` amounts.
+  Price priceFor(bool checkNow) => checkNow ? checkNowPrice : price;
+
   /// The password this mock accepts. A constant so no credential is stored.
   static const String acceptedPassword = 'password123';
 
@@ -983,13 +1062,17 @@ class MockWaecApi implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) async {
     charges.add(idempotencyKey);
+    checkNowFlags.add(checkNow);
     final n = charges.length;
     return ChargeInit(
       transactionId: 'tx-$n',
       status: 'pending',
-      amountPesewas: price.amountPesewas,
+      // The charge carries the rate for the purchase actually being made, so a
+      // test can prove the toggle reached the backend (ADR-002).
+      amountPesewas: priceFor(checkNow).amountPesewas,
       checkoutUrl: 'https://mock/pay',
       displayMessage: 'Approve on your phone',
       // A real charge response carries the provisioned voucher once payment
@@ -1038,7 +1121,10 @@ class MockWaecApi implements WaecApi {
   }
 
   @override
-  Future<Price> getPricing(ExamType examType) async => price;
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  }) async => priceFor(checkNow);
 
   @override
   Stream<TransactionStage> transactionStages(String transactionId) async* {

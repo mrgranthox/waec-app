@@ -29,6 +29,8 @@ class LandingScreen extends StatelessWidget {
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy header below.
+        top: false,
         bottom: false,
         child: ListView(
           padding: const EdgeInsets.only(bottom: WaecSpacing.xl),

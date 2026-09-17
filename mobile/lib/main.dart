@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
@@ -16,10 +18,12 @@ import 'features/auth/signup_screen.dart';
 import 'features/checker/buy_checker_screen.dart';
 import 'features/checker/checker_providers.dart';
 import 'features/history/history_screen.dart';
+import 'features/history/vault_barrier.dart';
 import 'features/landing/landing_screen.dart';
 import 'features/legal/privacy_screen.dart';
 import 'features/legal/terms_screen.dart';
 import 'features/processing/processing_screen.dart';
+import 'features/results/mock_result.dart';
 import 'features/results/result_canvas.dart';
 import 'features/splash/branded_splash.dart';
 import 'features/verification/verification_providers.dart';
@@ -31,14 +35,24 @@ Future<void> main() async {
   final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
-  // Paint the navy system bars before the first frame, so there is no
-  // light-status-bar flash between the native splash and the Flutter UI.
+  // Draw behind the system bars. On devices where Flutter would otherwise use
+  // the legacy (opaque) mode, `statusBarColor` paints the bar navy; on
+  // edge-to-edge devices (Android 15+, and always on iOS) that property is
+  // ignored and the bar is transparent, so the navy must come from the widget
+  // painted behind it. The navy headers absorb the status-bar inset themselves
+  // (see WaecNavyHeader), which is what keeps the two cases looking identical.
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+  // Paint the white splash system bars before the first frame so the native
+  // splash and the branded Flutter splash read as one white screen. The
+  // Android `styles.xml` launch-window colour only covers the native phase;
+  // without this call Flutter's boot-time overlay style would flip the bars
+  // to navy while the white splash is still on screen.
   //
-  // The Android `styles.xml` colour only covers the *launch window*; Flutter
-  // replaces it once it starts rendering. This call, the AppBarTheme overlay
-  // style and the root AnnotatedRegion together keep navy applied for the whole
-  // session (see kNavySystemBarStyle).
-  SystemChrome.setSystemUIOverlayStyle(kNavySystemBarStyle);
+  // BrandedSplash asserts the same style on its Scaffold; when it unmounts the
+  // root AnnotatedRegion in WaecApp re-asserts the navy session style
+  // (see kSplashSystemBarStyle / kNavySystemBarStyle).
+  SystemChrome.setSystemUIOverlayStyle(kSplashSystemBarStyle);
 
   // Load the brand kit (single source of truth for app identity) before the
   // first frame so every screen — including the splash — renders from it.
@@ -63,14 +77,40 @@ Future<void> main() async {
 
 /// Open (or create) the encrypted result archive, or null when the device
 /// cannot provide one.
+///
+/// Failure here is visible in two places rather than being silent: the log line
+/// below (so a device test can explain *why* the vault is missing) and the vault
+/// providers, which read a null archive as "no local storage on this device" and
+/// say exactly that instead of showing a white screen at boot.
+///
+/// A single recovery attempt follows the first failure: the unreadable file is
+/// **quarantined** (renamed, never deleted, so nothing is destroyed) and a fresh
+/// archive is created. That is what turns a permanently dead vault — the state
+/// a half-migrated or corrupt database leaves the app in, where every launch
+/// failed forever — back into a working one.
 Future<EncryptedResultArchive?> _openArchive() async {
+  String? path;
   try {
     final dir = await getDatabasesPath();
-    return await EncryptedResultArchive.open('$dir/waec_archive.db');
-  } catch (_) {
-    // Deliberately swallowed: storage is not a reason to deny a candidate
-    // access to the app. The vault providers treat null as "no local storage"
-    // and the UI says so, instead of a white screen at boot.
+    path = '$dir/waec_archive.db';
+    return await EncryptedResultArchive.open(path);
+  } catch (error) {
+    debugPrint('WAEC vault: could not open the local archive ($path): $error');
+  }
+
+  if (path == null) return null;
+
+  try {
+    final quarantined =
+        '$path.corrupt-${DateTime.now().millisecondsSinceEpoch}';
+    final file = File(path);
+    if (file.existsSync()) file.renameSync(quarantined);
+    debugPrint('WAEC vault: quarantined the unreadable archive at $quarantined');
+    return await EncryptedResultArchive.open(path);
+  } catch (error) {
+    debugPrint('WAEC vault: recovery attempt failed too: $error');
+    // Deliberately swallowed beyond the log: storage is not a reason to deny a
+    // candidate access to the app.
     return null;
   }
 }
@@ -220,10 +260,17 @@ class HomeShell extends ConsumerStatefulWidget {
   ConsumerState<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends ConsumerState<HomeShell> {
+class _HomeShellState extends ConsumerState<HomeShell>
+    with WidgetsBindingObserver {
   int _tab = 0;
   bool _showProcessing = false;
   bool _showResult = false;
+
+  /// Fingerprint barrier state (use case 1): enrolled accounts must confirm
+  /// with the sensor before the vault (History) or a fetched result sheet is
+  /// revealed, and the barrier re-arms whenever the app is backgrounded.
+  bool _barrierRequired = false;
+  bool _vaultUnlocked = false;
 
   /// Which page tab 0 (Home) is presenting: the hub, the checker purchase form,
   /// or the guided verification form.
@@ -232,10 +279,47 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Read the vault after the first frame: it touches SQLite, which must not
     // run inside build().
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadVault());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadVault();
+      _checkBarrier();
+    });
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Security barrier: leaving the app re-seals the vault so a phone handed
+    // to someone else cannot scroll straight into saved results.
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        mounted &&
+        _vaultUnlocked) {
+      setState(() => _vaultUnlocked = false);
+    }
+  }
+
+  /// The barrier engages only when the device owner opted in: fingerprint is
+  /// enrolled on this device for this account AND the session was opened with
+  /// biometrics available. Anyone who opted out sees the vault directly.
+  Future<void> _checkBarrier() async {
+    final enrolled = await ref
+        .read(biometricEnrolmentStoreProvider)
+        .isEnrolled(widget.indexNumber);
+    if (!mounted) return;
+    setState(() {
+      _barrierRequired = enrolled && widget.session.biometricEnabled;
+    });
+  }
+
+  void _unlockVault() => setState(() => _vaultUnlocked = true);
 
   /// Pull the encrypted checker vault for this account.
   Future<void> _loadVault() {
@@ -350,6 +434,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     });
 
     if (_showResult && journey.current == TransactionStage.complete) {
+      // A fetched grade sheet is local data too: an enrolled account must
+      // confirm with the sensor before it is put on screen (use case 1).
+      if (_barrierRequired && !_vaultUnlocked) {
+        return _BarrierScaffold(onUnlocked: _unlockVault);
+      }
       return _ResultHost(indexNumber: widget.indexNumber, onBack: _closeResult);
     }
 
@@ -360,7 +449,12 @@ class _HomeShellState extends ConsumerState<HomeShell> {
             index: _tab,
             children: [
               _homeTab(),
-              _historyTab(),
+              // The barrier mounts only while History is the active tab, so a
+              // locked vault never auto-prompts the sensor at cold start.
+              if (_tab == 1 && _barrierRequired && !_vaultUnlocked)
+                _BarrierScaffold(onUnlocked: _unlockVault)
+              else
+                _historyTab(),
               AboutScreen(onNavigate: _openLegal),
             ],
           ),
@@ -420,6 +514,11 @@ enum _HomePage { hub, check, buy }
 
 /// Result host page shown after a successful journey; supplies the
 /// in-memory-only grade payload (plan §3.5).
+///
+/// Local test phase (requirement 7): a deterministic [MockResult] is generated
+/// from the retrieval's stable identity (index + exam + year + transaction) so
+/// the sheet looks real and never changes between re-opens of the same
+/// retrieval. Production replaces this with the Handler service payload.
 class _ResultHost extends ConsumerWidget {
   const _ResultHost({required this.indexNumber, required this.onBack});
 
@@ -429,17 +528,41 @@ class _ResultHost extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final form = ref.read(verificationFormProvider);
+    final journey = ref.read(journeyProvider);
+    final mock = MockResult.generate(
+      indexNumber: indexNumber,
+      examType: form.examType.code,
+      examYear: form.examYear,
+      credential: journey.transactionId.isEmpty
+          ? form.examYear
+          : journey.transactionId,
+    );
     return ResultCanvas(
       indexNumber: indexNumber,
       examType: form.examType,
       examYear: form.examYear,
-      candidateName: 'CANDIDATE',
-      grades: const <SubjectGradeView>[],
-      aggregate: '',
+      candidateName: mock.candidateName,
+      grades: <SubjectGradeView>[
+        for (final entry in mock.subjects.entries)
+          SubjectGradeView(subject: entry.key, grade: entry.value),
+      ],
+      aggregate: '${mock.aggregate}',
       graceExpiresAt: DateTime.now().add(const Duration(hours: 24)),
       onBack: onBack,
     );
   }
+}
+
+/// Full-screen host for the fingerprint barrier over the History vault and a
+/// fetched result sheet.
+class _BarrierScaffold extends StatelessWidget {
+  const _BarrierScaffold({required this.onUnlocked});
+
+  final VoidCallback onUnlocked;
+
+  @override
+  Widget build(BuildContext context) =>
+      Scaffold(body: VaultBarrier(onUnlocked: onUnlocked));
 }
 
 /// Figma BottomNav: three tabs on a white bar, mint active dot.

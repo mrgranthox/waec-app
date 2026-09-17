@@ -14,7 +14,16 @@ class CrestHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         color: WaecColors.navy,
-        padding: const EdgeInsets.fromLTRB(24, 48, 24, 40),
+        // Absorbs the status-bar inset so the navy band runs to the top edge of
+        // the screen. Callers must therefore not wrap this in a top `SafeArea`
+        // (that would leave a white strip above the band on edge-to-edge
+        // devices, which is the bug this fixes).
+        padding: EdgeInsets.fromLTRB(
+          24,
+          48 + MediaQuery.paddingOf(context).top,
+          24,
+          40,
+        ),
         child: Column(
           children: [
             Container(

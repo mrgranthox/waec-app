@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 
 import '../../core/brand.dart';
+import '../../core/design_tokens.dart';
 
 /// Branded loading screen shown immediately after the native splash.
 ///
@@ -70,73 +72,109 @@ class _BrandedSplashState extends State<BrandedSplash>
     final brand = BrandScope.of(context);
     final statuses = brand.splashStatuses;
 
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Brand logo (transparent glyph master, rendered crisply).
-              Image.asset(brand.logoAsset, width: 112, filterQuality: FilterQuality.high),
-              const SizedBox(height: 24),
-              Text(
-                brand.appName,
-                style: TextStyle(
-                  color: brand.ink,
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: brand.fontSans,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                brand.splashDescription,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: brand.muted,
-                  fontSize: 14,
-                  fontFamily: brand.fontSans,
-                ),
-              ),
-              const SizedBox(height: 28),
-              // Live progress bar (brand teal on brand border track).
-              AnimatedBuilder(
-                animation: _progress,
-                builder: (context, _) {
-                  final value = _progress.value;
-                  final index = (value * statuses.length).floor().clamp(
-                        0,
-                        statuses.length - 1,
-                      );
-                  return Column(
-                    children: [
-                      SizedBox(
-                        width: 160,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(999),
-                          child: LinearProgressIndicator(
-                            value: value,
-                            minHeight: 4,
-                            backgroundColor: brand.border,
-                            valueColor: AlwaysStoppedAnimation<Color>(brand.teal),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        statuses[index],
-                        style: TextStyle(
-                          color: brand.ink.withValues(alpha: .65),
-                          fontSize: 12,
-                          fontFamily: brand.fontSans,
-                        ),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // White system bars too: the native launch window paints white behind
+      // both bars, and the root AnnotatedRegion (navy) only re-asserts itself
+      // once this splash unmounts and the auth gate takes over.
+      value: kSplashSystemBarStyle,
+      child: Scaffold(
+        // White splash (reported request): matches the white native splash so
+        // the two phases read as one. Navy text carries the contrast instead.
+        backgroundColor: Colors.white,
+        body: SafeArea(
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Brand logo: the glyph master is dark, so it stays visible
+                // directly on the white splash. A subtle border keeps the white
+                // plate defined against the white background.
+                Container(
+                  width: 132,
+                  height: 132,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: const Color(0xFFE2E8F0),
+                      width: 1.5,
+                    ),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x0D0A2540),
+                        blurRadius: 16,
+                        offset: Offset(0, 4),
                       ),
                     ],
-                  );
-                },
-              ),
-            ],
+                  ),
+                  alignment: Alignment.center,
+                  child: Image.asset(
+                    brand.logoAsset,
+                    width: 92,
+                    filterQuality: FilterQuality.high,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  brand.appName,
+                  style: TextStyle(
+                    color: WaecColors.navy,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: brand.fontSans,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  brand.splashDescription,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: WaecColors.textSecondaryLight,
+                    fontSize: 14,
+                    fontFamily: brand.fontSans,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                // Live progress bar (brand teal on a translucent track).
+                AnimatedBuilder(
+                  animation: _progress,
+                  builder: (context, _) {
+                    final value = _progress.value;
+                    final index = (value * statuses.length).floor().clamp(
+                      0,
+                      statuses.length - 1,
+                    );
+                    return Column(
+                      children: [
+                        SizedBox(
+                          width: 160,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(999),
+                            child: LinearProgressIndicator(
+                              value: value,
+                              minHeight: 4,
+                              backgroundColor: const Color(0xFFE2E8F0),
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                brand.teal,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          statuses[index],
+                          style: TextStyle(
+                            color: WaecColors.textSecondaryLight,
+                            fontSize: 12,
+                            fontFamily: brand.fontSans,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),

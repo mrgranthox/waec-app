@@ -79,10 +79,14 @@ class _ApiMustNotBeCalled implements WaecApi {
     required String indexNumber,
     required ExamType examType,
     required String examYear,
+    bool checkNow = false,
   }) => _unexpected('initCharge');
 
   @override
-  Future<Price> getPricing(ExamType examType) => _unexpected('getPricing');
+  Future<Price> getPricing({
+    required ExamType examType,
+    bool checkNow = false,
+  }) => _unexpected('getPricing');
 
   @override
   Stream<TransactionStage> transactionStages(String transactionId) =>

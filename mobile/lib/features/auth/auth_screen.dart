@@ -64,14 +64,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     final auth = ref.watch(authControllerProvider);
     _prefillRemembered(auth);
     final controller = ref.read(authControllerProvider.notifier);
-    // Offer the fingerprint shortcut when the stored session opted in and the
-    // device still has enrolled biometrics.
-    final biometricSession =
-        (auth.session?.biometricEnabled ?? false) && auth.biometricsAvailable;
+    // Offer the fingerprint shortcut from the device-local enrolment record:
+    // after sign-out the session is gone but enrolment survives, so gating on
+    // `session?.biometricEnabled` would hide the button exactly when a
+    // returning candidate needs it.
+    final showFingerprintSignIn = auth.canOfferBiometricSignIn;
 
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy crest header below.
+        top: false,
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
@@ -154,7 +157,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               )
                             : const Text('Sign in'),
                       ),
-                      if (biometricSession) ...[
+                      if (showFingerprintSignIn) ...[
                         const SizedBox(height: 12),
                         OutlinedButton.icon(
                           icon: const Icon(Icons.fingerprint, size: 22),

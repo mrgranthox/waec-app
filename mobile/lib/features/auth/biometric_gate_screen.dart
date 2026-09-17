@@ -42,6 +42,8 @@ class _BiometricGateScreenState extends ConsumerState<BiometricGateScreen> {
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy crest header below.
+        top: false,
         child: ListView(
           padding: EdgeInsets.zero,
           children: [
@@ -160,6 +162,8 @@ class BiometricEnrollScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: WaecColors.canvasLight,
       body: SafeArea(
+        // Top inset belongs to the navy crest header below.
+        top: false,
         child: ListView(
           padding: EdgeInsets.zero,
           children: [

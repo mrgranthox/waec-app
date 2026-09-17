@@ -22,7 +22,7 @@ android {
         // Biometric sign-in stack requires API 23+: flutter_secure_storage
         // (AndroidX Keystore) and local_auth's androidx.biometric both declare
         // minSdk 23. Flutter's default is 21, so pin the floor here.
-        minSdk = 23
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
         // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)

@@ -351,6 +351,101 @@ void main() {
       expect(id, 'ck-1');
       expect(await archive.listCheckers(_index), hasLength(1));
     });
+
+    test('a database stuck at v2 without the vault is repaired', () async {
+      // The regression the candidate hit: the database had already recorded
+      // version 2, so `onUpgrade` was never called again and the missing vault
+      // table could never appear. Every launch then reported "local storage is
+      // unavailable on this device" with no way out but a reinstall.
+      final stuck = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 2,
+          onCreate: (db, version) async {
+            await db.execute(
+              'CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)',
+            );
+            await db.execute('''
+              CREATE TABLE snapshots (
+                id TEXT PRIMARY KEY,
+                index_number TEXT NOT NULL,
+                exam_type TEXT NOT NULL,
+                exam_year TEXT NOT NULL,
+                created_unix INTEGER NOT NULL,
+                blob BLOB NOT NULL
+              )''');
+            await db.insert('meta', {
+              'k': 'salt',
+              'v': base64Encode(List<int>.filled(32, 9)),
+            });
+            // Deliberately no `checkers` table, despite claiming v2.
+          },
+        ),
+      );
+      await stuck.close();
+
+      final archive = await open();
+
+      // The vault is usable now, and the history the user already had survived.
+      expect(await archive.listCheckers(_index), isEmpty);
+      await seed(archive);
+      expect(await archive.listCheckers(_index), hasLength(1));
+      expect(await archive.listSnapshots(_index), isEmpty);
+    });
+
+    test('a missing salt is regenerated instead of failing the open', () async {
+      // Without this, one bad row made the entire archive unopenable — and the
+      // candidate lost access to everything else in the app with it.
+      final saltless = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 3,
+          onCreate: (db, version) async {
+            await db.execute(
+              'CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)',
+            );
+            // No salt row at all.
+          },
+        ),
+      );
+      await saltless.close();
+
+      final archive = await open();
+      await seed(archive);
+
+      final loaded = await archive.loadChecker(
+        id: 'ck-1',
+        indexNumber: _index,
+      );
+      expect(loaded, isNotNull);
+      expect(loaded!.serial, 'WAESERIAL0001');
+    });
+
+    test('an undecodable salt is replaced, not trusted', () async {
+      final corruptSalt = await databaseFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 3,
+          onCreate: (db, version) async {
+            await db.execute(
+              'CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)',
+            );
+            // Truncated base64: decoding it would either throw or yield a key
+            // that can never match the ciphertext that is already on disk.
+            await db.insert('meta', {'k': 'salt', 'v': 'not-base64!!!'});
+          },
+        ),
+      );
+      await corruptSalt.close();
+
+      final archive = await open();
+      await seed(archive);
+
+      expect(
+        (await archive.loadChecker(id: 'ck-1', indexNumber: _index))!.pin,
+        'PIN00000001',
+      );
+    });
   });
 
   group('snapshot regression', () {
