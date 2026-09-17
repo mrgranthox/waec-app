@@ -55,22 +55,36 @@ class AboutScreen extends ConsumerWidget {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(16),
                       color: const Color(0x1F00D4B1),
-                      border: Border.all(color: const Color(0x3D00D4B1), width: 1.5),
+                      border: Border.all(
+                        color: const Color(0x3D00D4B1),
+                        width: 1.5,
+                      ),
                     ),
                     child: const WaecCrest(size: 34),
                   ),
                   const SizedBox(height: WaecSpacing.md),
-                  Text(brand.appName,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold)),
+                  Text(
+                    brand.appName,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   const SizedBox(height: 4),
-                  Text(brand.tagline,
-                      style: const TextStyle(color: Color(0x73FFFFFF), fontSize: 12)),
+                  Text(
+                    brand.tagline,
+                    style: const TextStyle(
+                      color: Color(0x73FFFFFF),
+                      fontSize: 12,
+                    ),
+                  ),
                   const SizedBox(height: WaecSpacing.md),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 6,
+                    ),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(WaecRadii.pill),
                       color: const Color(0x1F00D4B1),
@@ -81,8 +95,10 @@ class AboutScreen extends ConsumerWidget {
                       builder: (_, snap) {
                         final v = snap.data?.version ?? brand.version;
                         final b = snap.data?.buildNumber ?? brand.buildNumber;
-                        return Text('v$v · Build $b',
-                            style: mono.copyWith(fontSize: 10));
+                        return Text(
+                          'v$v · Build $b',
+                          style: mono.copyWith(fontSize: 10),
+                        );
                       },
                     ),
                   ),
@@ -114,12 +130,14 @@ class AboutScreen extends ConsumerWidget {
                           builder: (_, snap) => Column(
                             children: [
                               _InfoRow(
-                                  label: 'Version',
-                                  value: snap.data?.version ?? brand.version),
+                                label: 'Version',
+                                value: snap.data?.version ?? brand.version,
+                              ),
                               _InfoRow(
-                                  label: 'Build',
-                                  value:
-                                      snap.data?.buildNumber ?? brand.buildNumber),
+                                label: 'Build',
+                                value:
+                                    snap.data?.buildNumber ?? brand.buildNumber,
+                              ),
                             ],
                           ),
                         ),
@@ -129,10 +147,7 @@ class AboutScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: WaecSpacing.md),
-                  _Card(
-                    label: 'Security',
-                    child: _BiometricToggleRow(),
-                  ),
+                  _Card(label: 'Security', child: _BiometricToggleRow()),
                   const SizedBox(height: WaecSpacing.md),
                   // Account management: sign-out + future account settings.
                   _AccountSection(),
@@ -167,9 +182,14 @@ class AboutScreen extends ConsumerWidget {
                     onTap: () => onNavigate(LegalScreen.terms),
                   ),
                   const SizedBox(height: WaecSpacing.md),
-                  Text(brand.copyright,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12)),
+                  Text(
+                    brand.copyright,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 12,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -187,26 +207,29 @@ class _Card extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(WaecSpacing.md),
-        decoration: BoxDecoration(
-          color: WaecColors.cardLight,
-          borderRadius: BorderRadius.circular(WaecRadii.lg),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
+    padding: const EdgeInsets.all(WaecSpacing.md),
+    decoration: BoxDecoration(
+      color: WaecColors.cardLight,
+      borderRadius: BorderRadius.circular(WaecRadii.lg),
+      border: Border.all(color: const Color(0xFFE2E8F0)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+            color: Color(0xFF64748B),
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(label.toUpperCase(),
-                style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 1.2,
-                    color: Color(0xFF64748B))),
-            const SizedBox(height: WaecSpacing.sm),
-            child,
-          ],
-        ),
-      );
+        const SizedBox(height: WaecSpacing.sm),
+        child,
+      ],
+    ),
+  );
 }
 
 class _ComplianceRow extends StatelessWidget {
@@ -215,40 +238,48 @@ class _ComplianceRow extends StatelessWidget {
   final String status;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(label, style: const TextStyle(fontSize: 14, color: Color(0xFF475569))),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(WaecRadii.pill),
-                color: const Color(0xFFF0FDF9),
-                border: Border.all(color: const Color(0xFFCCFBF1)),
-              ),
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: 5,
-                    height: 5,
-                    child: DecoratedBox(
-                      decoration:
-                          BoxDecoration(shape: BoxShape.circle, color: Color(0xFF00D4B1)),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(status,
-                      style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF00856F))),
-                ],
-              ),
-            ),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 14, color: Color(0xFF475569)),
         ),
-      );
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(WaecRadii.pill),
+            color: const Color(0xFFF0FDF9),
+            border: Border.all(color: const Color(0xFFCCFBF1)),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 5,
+                height: 5,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Color(0xFF00D4B1),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                status,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF00856F),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _InfoRow extends StatelessWidget {
@@ -257,64 +288,82 @@ class _InfoRow extends StatelessWidget {
   final String value;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(label, style: const TextStyle(fontSize: 14, color: Color(0xFF94A3B8))),
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF0A2540))),
-          ],
+    padding: const EdgeInsets.symmetric(vertical: 5),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 14, color: Color(0xFF94A3B8)),
         ),
-      );
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: Color(0xFF0A2540),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _ContactItem extends StatelessWidget {
-  const _ContactItem(
-      {required this.icon, required this.label, required this.value, this.onTap});
+  const _ContactItem({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.onTap,
+  });
   final IconData icon;
   final String label;
   final String value;
   final VoidCallback? onTap;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
-                  color: const Color(0xFFF8FAFC),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
-                ),
-                child: Icon(icon, size: 16, color: WaecColors.navy),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(label,
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
-                    Text(value,
-                        style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Color(0xFF0A2540))),
-                  ],
-                ),
-              ),
-            ],
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(9),
+              color: const Color(0xFFF8FAFC),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Icon(icon, size: 16, color: WaecColors.navy),
           ),
-        ),
-      );
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF94A3B8),
+                  ),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF0A2540),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _PolicyLink extends StatelessWidget {
@@ -323,29 +372,33 @@ class _PolicyLink extends StatelessWidget {
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: onTap,
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(WaecRadii.lg),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      decoration: BoxDecoration(
+        color: WaecColors.cardLight,
         borderRadius: BorderRadius.circular(WaecRadii.lg),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-          decoration: BoxDecoration(
-            color: WaecColors.cardLight,
-            borderRadius: BorderRadius.circular(WaecRadii.lg),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF0A2540),
+              ),
+            ),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                  child: Text(label,
-                      style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: Color(0xFF0A2540)))),
-              const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 18),
-            ],
-          ),
-        ),
-      );
+          const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 18),
+        ],
+      ),
+    ),
+  );
 }
 
 /// Fingerprint-unlock switch shown in the About screen's Security card
@@ -395,11 +448,11 @@ class _BiometricToggleRow extends ConsumerWidget {
           activeTrackColor: WaecColors.mint,
           onChanged: session == null
               ? null
-              : (v) {
+              : (v) async {
                   if (v) {
-                    controller.enableBiometrics();
+                    await controller.enableBiometrics();
                   } else {
-                    controller.disableBiometrics();
+                    await controller.disableBiometrics();
                   }
                 },
         ),
@@ -429,7 +482,11 @@ class _AccountSection extends ConsumerWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.person_outline, size: 18, color: WaecColors.navy),
+              const Icon(
+                Icons.person_outline,
+                size: 18,
+                color: WaecColors.navy,
+              ),
               const SizedBox(width: WaecSpacing.sm),
               Text(
                 'Account',
@@ -455,13 +512,10 @@ class _AccountSection extends ConsumerWidget {
 /// Sign-out row: ends the session without forgetting the remembered index (next
 /// launch drops the user onto the sign-in form, not sign-up).
 class _SignOutButton extends StatelessWidget {
-  const _SignOutButton({
-    required this.signedIn,
-    required this.onSignedOut,
-  });
+  const _SignOutButton({required this.signedIn, required this.onSignedOut});
 
   final bool signedIn;
-  final VoidCallback onSignedOut;
+  final Future<void> Function() onSignedOut;
 
   @override
   Widget build(BuildContext context) {
@@ -484,7 +538,13 @@ class _SignOutButton extends StatelessWidget {
     }
 
     return InkWell(
-      onTap: onSignedOut,
+      // Await the async sign-out so StateNotifier updates settle within this
+      // frame — a bare `onTap: onSignedOut` would fire and forget, and the
+      // resulting state change would land after the microtask drain that
+      // `pumpAndSettle` provides.
+      onTap: () async {
+        await onSignedOut();
+      },
       borderRadius: BorderRadius.circular(WaecRadii.lg),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),

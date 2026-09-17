@@ -13,38 +13,110 @@ enum ExamType {
   /// An unknown code degrades to [ExamType.bece] rather than throwing: a
   /// checker written by a newer build must not make an older build crash when
   /// the History tab lists the vault.
-  static ExamType fromCode(String? code) => values.firstWhere(
-    (e) => e.code == code,
-    orElse: () => ExamType.bece,
-  );
+  static ExamType fromCode(String? code) =>
+      values.firstWhere((e) => e.code == code, orElse: () => ExamType.bece);
 }
 
 /// Examination years the app offers, newest first.
 ///
-/// Extends from the most recent exam back to the first WAEC examination year
-/// (1990 — BECE inception). One list, shared by the verification form, the
-/// checker purchase screen and the account sign-up year hint, so the three can
-/// never drift into offering different years for the same exam.
+/// Extends from the most recent exam back to **1948**, the year the West
+/// African Examinations Council was established and first sat examinations —
+/// i.e. the start of WAEC, not merely the start of a single exam programme.
+/// One list, shared by the verification form, the checker purchase screen and
+/// the account sign-up year hint, so the three can never drift into offering
+/// different years for the same exam.
 ///
-/// Computed at compile time so the list is always contiguous and reverse-
-/// sorted without maintaining a manual literal.
+/// Contiguous and reverse-sorted by construction; [kExamYearFloor] is the single
+/// constant that defines the bottom of the range.
 const List<String> kExamYears = [
-  '2026', '2025', '2024', '2023', '2022', '2021',
-  '2020', '2019', '2018', '2017', '2016', '2015',
-  '2014', '2013', '2012', '2011', '2010', '2009',
-  '2008', '2007', '2006', '2005', '2004', '2003',
-  '2002', '2001', '2000', '1999', '1998', '1997',
-  '1996', '1995', '1994', '1993', '1992', '1991',
+  '2026',
+  '2025',
+  '2024',
+  '2023',
+  '2022',
+  '2021',
+  '2020',
+  '2019',
+  '2018',
+  '2017',
+  '2016',
+  '2015',
+  '2014',
+  '2013',
+  '2012',
+  '2011',
+  '2010',
+  '2009',
+  '2008',
+  '2007',
+  '2006',
+  '2005',
+  '2004',
+  '2003',
+  '2002',
+  '2001',
+  '2000',
+  '1999',
+  '1998',
+  '1997',
+  '1996',
+  '1995',
+  '1994',
+  '1993',
+  '1992',
+  '1991',
   '1990',
+  '1989',
+  '1988',
+  '1987',
+  '1986',
+  '1985',
+  '1984',
+  '1983',
+  '1982',
+  '1981',
+  '1980',
+  '1979',
+  '1978',
+  '1977',
+  '1976',
+  '1975',
+  '1974',
+  '1973',
+  '1972',
+  '1971',
+  '1970',
+  '1969',
+  '1968',
+  '1967',
+  '1966',
+  '1965',
+  '1964',
+  '1963',
+  '1962',
+  '1961',
+  '1960',
+  '1959',
+  '1958',
+  '1957',
+  '1956',
+  '1955',
+  '1954',
+  '1953',
+  '1952',
+  '1951',
+  '1950',
+  '1949',
+  '1948',
 ];
 
 /// The exam year selected by default — the most recent one offered.
 const String kDefaultExamYear = '2026';
 
-/// Earliest examination year the app accepts (WAEC BECE inception, 1990).
+/// Earliest examination year the app accepts: **1948**, the founding of WAEC.
 /// Used by the backend validation seam + the mock API so the mobile and
 /// server share the same floor instead of drifting.
-const int kExamYearFloor = 1990;
+const int kExamYearFloor = 1948;
 
 /// Validates an examination year string: a 4-digit year between
 /// [kExamYearFloor] and the current calendar year, inclusive.
@@ -214,7 +286,8 @@ class AuthSession {
       userId: json['user_id'] as String? ?? '',
       accessToken: json['access_token'] as String? ?? '',
       refreshToken: json['refresh_token'] as String? ?? '',
-      accessExpiresAtUnix: (json['access_expires_at_unix'] as num?)?.toInt() ?? 0,
+      accessExpiresAtUnix:
+          (json['access_expires_at_unix'] as num?)?.toInt() ?? 0,
       issuedAtUnix: (json['issued_at_unix'] as num?)?.toInt() ?? 0,
       source: AuthSessionSource.fromWire(json['source'] as String?),
       biometricEnabled: json['biometric_enabled'] as bool? ?? false,

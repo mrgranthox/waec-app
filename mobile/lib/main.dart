@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sqflite/sqflite.dart' show getDatabasesPath;
@@ -29,6 +30,15 @@ Future<void> main() async {
   // painted, then hand off seamlessly (BrandedSplash calls remove()).
   final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+  // Paint the navy system bars before the first frame, so there is no
+  // light-status-bar flash between the native splash and the Flutter UI.
+  //
+  // The Android `styles.xml` colour only covers the *launch window*; Flutter
+  // replaces it once it starts rendering. This call, the AppBarTheme overlay
+  // style and the root AnnotatedRegion together keep navy applied for the whole
+  // session (see kNavySystemBarStyle).
+  SystemChrome.setSystemUIOverlayStyle(kNavySystemBarStyle);
 
   // Load the brand kit (single source of truth for app identity) before the
   // first frame so every screen — including the splash — renders from it.
@@ -80,6 +90,14 @@ class WaecApp extends StatelessWidget {
       theme: WaecTheme.light(),
       darkTheme: WaecTheme.dark(),
       themeMode: ThemeMode.system,
+      // Re-assert the navy system bars on every route, including screens that
+      // have no AppBar (splash, auth, biometric gate). An AppBar-less route
+      // would otherwise let Flutter fall back to its default overlay style and
+      // the status bar would revert to the surface colour mid-session.
+      builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+        value: kNavySystemBarStyle,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: const _AuthGate(),
     );
   }
@@ -119,13 +137,13 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         // booting is handled by the splash branch above.
         AuthStage.booting => const SizedBox.shrink(),
         AuthStage.signUp => SignUpScreen(
-            onGoToSignIn: () =>
-                ref.read(authControllerProvider.notifier).goToSignIn(),
-          ),
+          onGoToSignIn: () =>
+              ref.read(authControllerProvider.notifier).goToSignIn(),
+        ),
         AuthStage.signIn => AuthScreen(
-            onGoToSignUp: () =>
-                ref.read(authControllerProvider.notifier).goToSignUp(),
-          ),
+          onGoToSignUp: () =>
+              ref.read(authControllerProvider.notifier).goToSignUp(),
+        ),
         AuthStage.biometricUnlock => const BiometricGateScreen(),
         AuthStage.biometricEnroll => const BiometricEnrollScreen(),
         AuthStage.authenticated =>
@@ -311,11 +329,13 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   }
 
   void _openLegal(LegalScreen screen) {
-    Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => screen == LegalScreen.privacy
-          ? const PrivacyScreen()
-          : const TermsScreen(),
-    ));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => screen == LegalScreen.privacy
+            ? const PrivacyScreen()
+            : const TermsScreen(),
+      ),
+    );
   }
 
   @override
@@ -330,10 +350,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     });
 
     if (_showResult && journey.current == TransactionStage.complete) {
-      return _ResultHost(
-        indexNumber: widget.indexNumber,
-        onBack: _closeResult,
-      );
+      return _ResultHost(indexNumber: widget.indexNumber, onBack: _closeResult);
     }
 
     return Scaffold(
@@ -440,61 +457,60 @@ class _WaecBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 4, top: 8),
-            child: Row(
-              children: [
-                for (var i = 0; i < _tabs.length; i++)
-                  Expanded(
-                    child: InkWell(
-                      onTap: () => onChanged(i),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _tabs[i].$2,
-                            size: 20,
-                            color: index == i
-                                ? WaecColors.mint
-                                : const Color(0xFFCBD5E1),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            _tabs[i].$1,
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w500,
-                              color: index == i
-                                  ? WaecColors.navy
-                                  : const Color(0xFF94A3B8),
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          if (index == i)
-                            Container(
-                              width: 4,
-                              height: 4,
-                              decoration: const BoxDecoration(
-                                color: WaecColors.mint,
-                                shape: BoxShape.circle,
-                              ),
-                            )
-                          else
-                            const SizedBox(width: 4, height: 4),
-                        ],
+    decoration: const BoxDecoration(
+      color: Colors.white,
+      border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+    ),
+    child: SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 4, top: 8),
+        child: Row(
+          children: [
+            for (var i = 0; i < _tabs.length; i++)
+              Expanded(
+                child: InkWell(
+                  onTap: () => onChanged(i),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _tabs[i].$2,
+                        size: 20,
+                        color: index == i
+                            ? WaecColors.mint
+                            : const Color(0xFFCBD5E1),
                       ),
-                    ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _tabs[i].$1,
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                          color: index == i
+                              ? WaecColors.navy
+                              : const Color(0xFF94A3B8),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      if (index == i)
+                        Container(
+                          width: 4,
+                          height: 4,
+                          decoration: const BoxDecoration(
+                            color: WaecColors.mint,
+                            shape: BoxShape.circle,
+                          ),
+                        )
+                      else
+                        const SizedBox(width: 4, height: 4),
+                    ],
                   ),
-              ],
-            ),
-          ),
+                ),
+              ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 }
-

@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart' show BiometricType;
 
 import 'package:waec_direct/core/brand.dart';
+import 'package:waec_direct/core/security/biometric_enrolment.dart';
 import 'package:waec_direct/core/security/biometric_service.dart';
 import 'package:waec_direct/core/security/session_store.dart';
 import 'package:waec_direct/core/storage/encrypted_archive.dart';
@@ -73,10 +74,10 @@ class FakeBiometricAuthenticator implements BiometricAuthenticator {
 
   /// A device with an enrolled fingerprint (Class 3 strong biometric).
   static BiometricCapability fingerprintCapable() => const BiometricCapability(
-        hardwareSupported: true,
-        deviceSupported: true,
-        enrolled: <BiometricType>[BiometricType.fingerprint],
-      );
+    hardwareSupported: true,
+    deviceSupported: true,
+    enrolled: <BiometricType>[BiometricType.fingerprint],
+  );
 }
 
 /// Brand fixture mirroring `assets/brand_kit.json`.
@@ -137,8 +138,9 @@ final Brand testBrand = Brand.fromJson(const <String, dynamic>{
 /// uses, so `BrandScope.of` and Riverpod both resolve.
 ///
 /// Auth-sensitive providers get safe test defaults (in-memory session store,
-/// unsupported-device biometrics, offline fallback allowed) so no test ever
-/// touches a platform channel. Defaults are listed FIRST and caller
+/// in-memory fingerprint enrolment store, unsupported-device biometrics,
+/// offline fallback allowed) so no test ever touches a platform channel.
+/// Defaults are listed FIRST and caller
 /// [overrides] LAST: Riverpod resolves duplicate overrides last-wins, so an
 /// explicit caller override always beats the harness default. Prefer passing
 /// instances through the named parameters instead — the harness_order_test
@@ -148,6 +150,7 @@ Widget wrapWithBrand(
   List<Override> overrides = const <Override>[],
   SessionStore? sessionStore,
   BiometricAuthenticator? biometrics,
+  BiometricEnrolmentStore? enrolments,
   bool allowOfflineAuthFallback = true,
   EncryptedResultArchive? archive,
 }) {
@@ -155,13 +158,23 @@ Widget wrapWithBrand(
     brand: testBrand,
     child: ProviderScope(
       overrides: <Override>[
-        sessionStoreProvider
-            .overrideWithValue(sessionStore ?? InMemorySessionStore()),
+        sessionStoreProvider.overrideWithValue(
+          sessionStore ?? InMemorySessionStore(),
+        ),
         biometricAuthenticatorProvider.overrideWithValue(
           biometrics ?? FakeBiometricAuthenticator(),
         ),
-        allowOfflineAuthFallbackProvider
-            .overrideWithValue(allowOfflineAuthFallback),
+        // Must be overridden: the default SecureBiometricEnrolmentStore writes
+        // through flutter_secure_storage, which on a headless Linux host
+        // resolves to libsecret/D-Bus and *hangs forever* rather than throwing.
+        // signOut(), enableBiometrics() and boot() all read it, so leaving it
+        // un-overridden wedged the About-screen suite on a 10-minute timeout.
+        biometricEnrolmentStoreProvider.overrideWithValue(
+          enrolments ?? InMemoryBiometricEnrolmentStore(),
+        ),
+        allowOfflineAuthFallbackProvider.overrideWithValue(
+          allowOfflineAuthFallback,
+        ),
         // Explicit null by default: a widget test must never reach a platform
         // channel for SQLite. Pass a real archive (opened on sqflite_common_ffi)
         // in the tests that exercise the checker vault.
@@ -180,6 +193,7 @@ Future<void> pumpApp(
   List<Override> overrides = const <Override>[],
   SessionStore? sessionStore,
   BiometricAuthenticator? biometrics,
+  BiometricEnrolmentStore? enrolments,
   bool allowOfflineAuthFallback = true,
   EncryptedResultArchive? archive,
 }) => tester.pumpWidget(
@@ -188,6 +202,7 @@ Future<void> pumpApp(
     overrides: overrides,
     sessionStore: sessionStore,
     biometrics: biometrics,
+    enrolments: enrolments,
     allowOfflineAuthFallback: allowOfflineAuthFallback,
     archive: archive,
   ),

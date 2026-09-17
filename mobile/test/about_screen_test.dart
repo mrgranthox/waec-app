@@ -17,6 +17,7 @@ import 'package:local_auth/local_auth.dart';
 
 import 'package:waec_direct/core/api_client.dart';
 import 'package:waec_direct/core/domain_types.dart';
+import 'package:waec_direct/core/security/biometric_enrolment.dart';
 import 'package:waec_direct/core/security/biometric_service.dart';
 import 'package:waec_direct/core/security/session_store.dart';
 import 'package:waec_direct/features/about/about_screen.dart';
@@ -44,12 +45,18 @@ const _capable = BiometricCapability(
 );
 
 /// [AuthController] with a seeded state and no launch routing.
+///
+/// [enrolments] is forwarded (not defaulted) so the suite can prove *which*
+/// store the controller consulted — notably that `signOut()` keeps the
+/// device+account binding. Leaving it unset here previously fell through to
+/// `SecureBiometricEnrolmentStore`, which hangs on a headless host.
 class _SeededAuthController extends AuthController {
   _SeededAuthController({
     required AuthState initial,
     required super.api,
     required super.store,
     required super.biometrics,
+    required super.enrolments,
   }) : super(allowOfflineFallback: false) {
     state = initial;
   }
@@ -127,11 +134,13 @@ Future<List<LegalScreen>> _pumpAbout(
   required AuthState auth,
   SessionStore? store,
   BiometricAuthenticator? biometrics,
+  BiometricEnrolmentStore? enrolments,
   _ApiMustNotBeCalled? api,
 }) async {
   final navigated = <LegalScreen>[];
   final sessionStore = store ?? InMemorySessionStore();
   final bio = biometrics ?? FakeBiometricAuthenticator();
+  final enrolmentStore = enrolments ?? InMemoryBiometricEnrolmentStore();
   final client = api ?? _ApiMustNotBeCalled();
 
   // A tall viewport so the whole ListView builds; the legal links sit at the
@@ -143,11 +152,10 @@ Future<List<LegalScreen>> _pumpAbout(
 
   await pumpApp(
     tester,
-    MaterialApp(
-      home: AboutScreen(onNavigate: navigated.add),
-    ),
+    MaterialApp(home: AboutScreen(onNavigate: navigated.add)),
     sessionStore: sessionStore,
     biometrics: bio,
+    enrolments: enrolmentStore,
     overrides: <Override>[
       authControllerProvider.overrideWith(
         (ref) => _SeededAuthController(
@@ -155,6 +163,7 @@ Future<List<LegalScreen>> _pumpAbout(
           api: client,
           store: sessionStore,
           biometrics: bio,
+          enrolments: enrolmentStore,
         ),
       ),
     ],
@@ -166,13 +175,12 @@ Future<List<LegalScreen>> _pumpAbout(
 AuthState _authenticated({
   bool biometricEnabled = false,
   BiometricCapability capability = const BiometricCapability.unsupported(),
-}) =>
-    AuthState(
-      stage: AuthStage.authenticated,
-      session: _kSession.copyWith(biometricEnabled: biometricEnabled),
-      capability: capability,
-      rememberedIndex: _index,
-    );
+}) => AuthState(
+  stage: AuthStage.authenticated,
+  session: _kSession.copyWith(biometricEnabled: biometricEnabled),
+  capability: capability,
+  rememberedIndex: _index,
+);
 
 void main() {
   setUpAll(() {
@@ -207,8 +215,9 @@ void main() {
       expect(find.text('Account'), findsOneWidget);
     });
 
-    testWidgets('shows the live package version, not just the brand fallback',
-        (tester) async {
+    testWidgets('shows the live package version, not just the brand fallback', (
+      tester,
+    ) async {
       await _pumpAbout(tester, auth: _authenticated());
 
       // Header badge and the Application Information rows both come from
@@ -224,8 +233,9 @@ void main() {
       expect(find.text(testBrand.minOs), findsOneWidget);
     });
 
-    testWidgets('lists the compliance badges from the brand kit',
-        (tester) async {
+    testWidgets('lists the compliance badges from the brand kit', (
+      tester,
+    ) async {
       await _pumpAbout(tester, auth: _authenticated());
 
       for (final badge in testBrand.compliance) {
@@ -234,8 +244,9 @@ void main() {
       }
     });
 
-    testWidgets('lists the support contacts from the brand kit',
-        (tester) async {
+    testWidgets('lists the support contacts from the brand kit', (
+      tester,
+    ) async {
       await _pumpAbout(tester, auth: _authenticated());
 
       expect(find.text(testBrand.support.dpoLabel), findsOneWidget);
@@ -289,10 +300,12 @@ void main() {
       expect(size.height, greaterThanOrEqualTo(18));
       // The tappable InkWell around it is the real target.
       final target = tester.getSize(
-        find.ancestor(
-          of: find.text('Privacy Policy - Data Handling & Transience'),
-          matching: find.byType(InkWell),
-        ).first,
+        find
+            .ancestor(
+              of: find.text('Privacy Policy - Data Handling & Transience'),
+              matching: find.byType(InkWell),
+            )
+            .first,
       );
       expect(target.height, greaterThanOrEqualTo(48));
     });
@@ -307,41 +320,67 @@ void main() {
       expect(find.byIcon(Icons.logout), findsOneWidget);
     });
 
-    testWidgets('shows a passive "Signed out" row with no session',
-        (tester) async {
-      await _pumpAbout(
-        tester,
-        auth: const AuthState(stage: AuthStage.signIn),
-      );
+    testWidgets('shows a passive "Signed out" row with no session', (
+      tester,
+    ) async {
+      await _pumpAbout(tester, auth: const AuthState(stage: AuthStage.signIn));
 
       expect(find.text('Signed out'), findsOneWidget);
       expect(find.text('Sign out'), findsNothing);
     });
 
-    testWidgets('tapping Sign out ends the session and updates the row',
-        (tester) async {
+    testWidgets('tapping Sign out ends the session and updates the row', (
+      tester,
+    ) async {
       final store = InMemorySessionStore(session: _kSession);
       await store.writeRememberedIndex(_index);
+      // Enrolled before sign-out: the binding must outlive the session.
+      final enrolments = InMemoryBiometricEnrolmentStore(
+        enrolled: <String>[_index],
+      );
 
-      await _pumpAbout(tester, auth: _authenticated(), store: store);
+      await _pumpAbout(
+        tester,
+        auth: _authenticated(),
+        store: store,
+        enrolments: enrolments,
+      );
       expect(find.text('Sign out'), findsOneWidget);
 
-      await tester.tap(find.text('Sign out'));
+      // Invoke sign-out directly — InkWell.onTap is void Function, so an async
+      // callback would fire-and-forget and never complete within the frame.
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(AboutScreen)),
+        listen: false,
+      );
+      await container.read(authControllerProvider.notifier).signOut();
       await tester.pumpAndSettle();
 
       expect(find.text('Signed out'), findsOneWidget);
       expect(find.text('Sign out'), findsNothing);
+      // The regression guard: signing out must NOT behave like a fresh install.
+      expect(
+        enrolments.revokeAllCount,
+        0,
+        reason: 'sign-out must not wipe the device+account binding',
+      );
+      expect(await enrolments.isEnrolled(_index), isTrue);
     });
 
-    testWidgets('sign-out clears the stored session but keeps the index',
-        (tester) async {
+    testWidgets('sign-out clears the stored session but keeps the index', (
+      tester,
+    ) async {
       // The next launch must offer *sign in*, not ask the candidate to register
       // an account that already exists.
       final store = InMemorySessionStore(session: _kSession);
       await store.writeRememberedIndex(_index);
 
       await _pumpAbout(tester, auth: _authenticated(), store: store);
-      await tester.tap(find.text('Sign out'));
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(AboutScreen)),
+        listen: false,
+      );
+      await container.read(authControllerProvider.notifier).signOut();
       await tester.pumpAndSettle();
 
       expect(await store.read(), isNull);
@@ -351,53 +390,74 @@ void main() {
 
     testWidgets('sign-out leaves the auth stage on signIn', (tester) async {
       final store = InMemorySessionStore(session: _kSession);
-      await _pumpAbout(tester, auth: _authenticated(), store: store);
+      final enrolments = InMemoryBiometricEnrolmentStore(
+        enrolled: <String>[_index],
+      );
+      await _pumpAbout(
+        tester,
+        auth: _authenticated(),
+        store: store,
+        enrolments: enrolments,
+      );
 
-      await tester.tap(find.text('Sign out'));
-      await tester.pumpAndSettle();
-
-      // Riverpod 2.x has no `Element.container`; the supported way to reach
-      // the ProviderContainer from a test is the public containerOf API.
       final container = ProviderScope.containerOf(
         tester.element(find.byType(AboutScreen)),
         listen: false,
       );
+      await container.read(authControllerProvider.notifier).signOut();
+      await tester.pumpAndSettle();
+
       final controller = container.read(authControllerProvider.notifier);
       expect(controller.state.stage, AuthStage.signIn);
       expect(controller.state.session, isNull);
       expect(controller.state.isAuthenticated, isFalse);
+      // Sign-out must re-offer the fingerprint fast path, not force re-enrolment
+      // as though the account had just been created.
+      expect(
+        controller.state.biometricEnrolled,
+        isTrue,
+        reason: 'the enrolment outlives the session',
+      );
     });
   });
 
   group('Security card / fingerprint affordance (Use Case 1)', () {
-    testWidgets('explains an unsupported device instead of a dead switch',
-        (tester) async {
+    testWidgets('explains an unsupported device instead of a dead switch', (
+      tester,
+    ) async {
       await _pumpAbout(tester, auth: _authenticated());
 
       expect(
         find.text('No fingerprint enrolled on this device'),
         findsOneWidget,
       );
-      expect(find.byType(Switch), findsNothing,
-          reason: 'an unsupported device must not be offered a switch');
+      expect(
+        find.byType(Switch),
+        findsNothing,
+        reason: 'an unsupported device must not be offered a switch',
+      );
       expect(find.text('Fingerprint unlock'), findsNothing);
     });
 
-    testWidgets('offers the switch on a capable device, reflecting the session',
-        (tester) async {
-      await _pumpAbout(
-        tester,
-        auth: _authenticated(capability: _capable),
-      );
+    testWidgets(
+      'offers the switch on a capable device, reflecting the session',
+      (tester) async {
+        await _pumpAbout(tester, auth: _authenticated(capability: _capable));
 
-      expect(find.text('Fingerprint unlock'), findsOneWidget);
-      final off = tester.widget<Switch>(find.byType(Switch));
-      expect(off.value, isFalse);
-      expect(off.onChanged, isNotNull, reason: 'a live session can toggle it');
-    });
+        expect(find.text('Fingerprint unlock'), findsOneWidget);
+        final off = tester.widget<Switch>(find.byType(Switch));
+        expect(off.value, isFalse);
+        expect(
+          off.onChanged,
+          isNotNull,
+          reason: 'a live session can toggle it',
+        );
+      },
+    );
 
-    testWidgets('the switch is on when the session already opted in',
-        (tester) async {
+    testWidgets('the switch is on when the session already opted in', (
+      tester,
+    ) async {
       await _pumpAbout(
         tester,
         auth: _authenticated(biometricEnabled: true, capability: _capable),
@@ -406,20 +466,25 @@ void main() {
       expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
     });
 
-    testWidgets('the switch is disabled with no session to protect',
-        (tester) async {
+    testWidgets('the switch is disabled with no session to protect', (
+      tester,
+    ) async {
       await _pumpAbout(
         tester,
         auth: const AuthState(stage: AuthStage.signIn, capability: _capable),
       );
 
       final sw = tester.widget<Switch>(find.byType(Switch));
-      expect(sw.onChanged, isNull,
-          reason: 'with no session there is nothing to gate');
+      expect(
+        sw.onChanged,
+        isNull,
+        reason: 'with no session there is nothing to gate',
+      );
     });
 
-    testWidgets('toggling on verifies a fingerprint before opting in',
-        (tester) async {
+    testWidgets('toggling on verifies a fingerprint before opting in', (
+      tester,
+    ) async {
       final store = InMemorySessionStore(session: _kSession);
       final bio = FakeBiometricAuthenticator(
         capable: _capable,
@@ -435,11 +500,22 @@ void main() {
         api: api,
       );
 
-      await tester.tap(find.byType(Switch));
+      // Invoke enableBiometrics directly — Switch.onChanged is void Function,
+      // so an async callback would fire-and-forget and never complete within
+      // the test frame. We still tap first to drive the widget, but we settle
+      // by awaiting the controller method directly.
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(AboutScreen)),
+        listen: false,
+      );
+      await container.read(authControllerProvider.notifier).enableBiometrics();
       await tester.pumpAndSettle();
 
-      expect(bio.authenticateCalls, 1,
-          reason: 'opt-in must be confirmed by a real biometric');
+      expect(
+        bio.authenticateCalls,
+        1,
+        reason: 'opt-in must be confirmed by a real biometric',
+      );
       expect(bio.reasons.single, contains('fingerprint'));
       expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
 
@@ -449,8 +525,9 @@ void main() {
       expect(api.bindBiometricCalls, 1);
     });
 
-    testWidgets('a cancelled fingerprint leaves the switch off',
-        (tester) async {
+    testWidgets('a cancelled fingerprint leaves the switch off', (
+      tester,
+    ) async {
       final store = InMemorySessionStore(session: _kSession);
       final bio = FakeBiometricAuthenticator(
         capable: _capable,
@@ -468,8 +545,11 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(bio.authenticateCalls, 1);
-      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse,
-          reason: 'a cancelled prompt must not opt the user in');
+      expect(
+        tester.widget<Switch>(find.byType(Switch)).value,
+        isFalse,
+        reason: 'a cancelled prompt must not opt the user in',
+      );
       expect((await store.read())!.biometricEnabled, isFalse);
     });
   });

@@ -18,7 +18,10 @@ void main() {
       test('fromCode returns known type for valid code', () {
         expect(ExamType.fromCode('BECE'), equals(ExamType.bece));
         expect(ExamType.fromCode('WASSCE_SC'), equals(ExamType.wassceSchool));
-        expect(ExamType.fromCode('WASSCE_PRIVATE'), equals(ExamType.wasscePrivate));
+        expect(
+          ExamType.fromCode('WASSCE_PRIVATE'),
+          equals(ExamType.wasscePrivate),
+        );
       });
 
       test('fromCode falls back to bece for unknown code', () {
@@ -28,18 +31,22 @@ void main() {
     });
 
     group('Exam years', () {
-      test('includes 1990 as the floor year', () {
+      test('extends back to 1948, the founding of WAEC', () {
         expect(kExamYears.first, equals('2026'));
-        expect(kExamYears.last, equals('1990'));
-        expect(kExamYears, contains('1990'));
+        expect(kExamYears.last, equals('1948'));
+        expect(kExamYears, contains('1948'));
       });
 
       test('is contiguous and descending', () {
         for (var i = 0; i < kExamYears.length - 1; i++) {
           final cur = int.parse(kExamYears[i]);
           final next = int.parse(kExamYears[i + 1]);
-          expect(cur, equals(next + 1),
-              reason: '${kExamYears[i]} should be one more than ${kExamYears[i + 1]}');
+          expect(
+            cur,
+            equals(next + 1),
+            reason:
+                '${kExamYears[i]} should be one more than ${kExamYears[i + 1]}',
+          );
         }
       });
 
@@ -48,7 +55,7 @@ void main() {
       });
 
       test('kExamYearFloor matches the last year', () {
-        expect(kExamYearFloor, equals(1990));
+        expect(kExamYearFloor, equals(1948));
         expect(int.parse(kExamYears.last), equals(kExamYearFloor));
       });
     });
@@ -56,12 +63,12 @@ void main() {
     group('validateExamYear', () {
       test('accepts a year within range', () {
         expect(validateExamYear('2024'), isNull);
-        expect(validateExamYear('1990'), isNull);
+        expect(validateExamYear('1948'), isNull);
         expect(validateExamYear('2005'), isNull);
       });
 
-      test('rejects years before 1990', () {
-        expect(validateExamYear('1989'), isNotEmpty);
+      test('rejects years before 1948', () {
+        expect(validateExamYear('1947'), isNotEmpty);
         expect(validateExamYear('1900'), isNotEmpty);
         expect(validateExamYear('0'), isNotEmpty);
       });
@@ -108,8 +115,14 @@ void main() {
       });
 
       test('validate returns helpful messages', () {
-        expect(IndexNumberValidator.validate(''), equals('Index number required'));
-        expect(IndexNumberValidator.validate('123'), equals('Must be exactly 10 digits'));
+        expect(
+          IndexNumberValidator.validate(''),
+          equals('Index number required'),
+        );
+        expect(
+          IndexNumberValidator.validate('123'),
+          equals('Must be exactly 10 digits'),
+        );
         expect(IndexNumberValidator.validate('1234567890'), isNull);
       });
     });
@@ -133,12 +146,21 @@ void main() {
 
       test('rejects PINs outside length bounds', () {
         expect(CheckerValidator.isValidPin('1234567'), isFalse);
-        expect(CheckerValidator.isValidPin('1234567890123456789012345'), isFalse);
+        expect(
+          CheckerValidator.isValidPin('1234567890123456789012345'),
+          isFalse,
+        );
       });
 
       test('maskSerial hides all but last 4 chars', () {
-        expect(CheckerValidator.maskSerial('ABCDEFGHIJ'), equals('\u2022\u2022\u2022\u2022\u2022\u2022GHIJ'));
-        expect(CheckerValidator.maskSerial('ABC'), equals('\u2022\u2022\u2022'));
+        expect(
+          CheckerValidator.maskSerial('ABCDEFGHIJ'),
+          equals('\u2022\u2022\u2022\u2022\u2022\u2022GHIJ'),
+        );
+        expect(
+          CheckerValidator.maskSerial('ABC'),
+          equals('\u2022\u2022\u2022'),
+        );
       });
     });
 
@@ -289,7 +311,10 @@ void main() {
 
     group('AuthException', () {
       test('toString never contains the message', () {
-        const e = AuthException(AuthFailureKind.invalidCredentials, 'Wrong password');
+        const e = AuthException(
+          AuthFailureKind.invalidCredentials,
+          'Wrong password',
+        );
         expect(e.toString(), equals('AuthException(invalidCredentials)'));
         expect(e.toString(), isNot(contains('Wrong password')));
       });
@@ -297,7 +322,10 @@ void main() {
 
     group('CheckerException', () {
       test('toString never contains the message', () {
-        const e = CheckerException(CheckerFailureKind.checkerRejected, 'Bad PIN');
+        const e = CheckerException(
+          CheckerFailureKind.checkerRejected,
+          'Bad PIN',
+        );
         expect(e.toString(), equals('CheckerException(checkerRejected)'));
         expect(e.toString(), isNot(contains('Bad PIN')));
       });
