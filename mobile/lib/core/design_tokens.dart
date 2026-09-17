@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 /// WAEC platform design tokens (plan §3.1).
@@ -34,6 +35,31 @@ abstract final class WaecColors {
   static const Color textPrimaryDark = Color(0xFFF1F5F9);
   static const Color textSecondaryDark = Color(0xFF94A3B8);
 }
+
+/// Navy system-bar style applied app-wide (requirement: the brand colour
+/// extends into the status bar, not just the splash).
+///
+/// Setting `android:statusBarColor` in `styles.xml` is **not** sufficient: that
+/// only paints the *launch window*. As soon as Flutter draws its first frame it
+/// pushes its own [SystemUiOverlayStyle] — derived from the enclosing
+/// `AppBar`/`Scaffold` brightness — and the navy reverts to the surface colour.
+/// This style is therefore applied from three places so it survives navigation:
+///
+/// 1. [SystemChrome.setSystemUIOverlayStyle] at boot (`main.dart`)
+/// 2. `AppBarTheme.systemOverlayStyle` (every `AppBar`)
+/// 3. an `AnnotatedRegion` at the app root (screens with no `AppBar`)
+///
+/// Android honours `statusBarColor` / `systemNavigationBarColor` directly.
+/// iOS has no status-bar colour API: `statusBarBrightness: Brightness.dark`
+/// tells the OS the bar sits on a dark background so it renders light icons,
+/// and the navy itself comes from the widget painted behind the bar.
+const SystemUiOverlayStyle kNavySystemBarStyle = SystemUiOverlayStyle(
+  statusBarColor: WaecColors.navy,
+  statusBarBrightness: Brightness.dark,
+  statusBarIconBrightness: Brightness.light,
+  systemNavigationBarColor: WaecColors.navy,
+  systemNavigationBarIconBrightness: Brightness.light,
+);
 
 /// Spacing scale (4pt grid).
 abstract final class WaecSpacing {
@@ -85,10 +111,17 @@ abstract final class WaecTheme {
       textTheme: baseTextTheme,
       appBarTheme: AppBarTheme(
         backgroundColor: colorScheme.surface,
-        foregroundColor:
-            isLight ? WaecColors.textPrimaryLight : WaecColors.textPrimaryDark,
+        foregroundColor: isLight
+            ? WaecColors.textPrimaryLight
+            : WaecColors.textPrimaryDark,
         elevation: 0,
         centerTitle: true,
+        // Re-assert the navy system bars under every AppBar. Without this,
+        // Flutter derives the overlay style from the AppBar's own brightness
+        // and the navy launch colour reverts as soon as the first frame paints.
+        // A single style (not a per-brightness map) is correct here: the bar
+        // colour is a brand constant, identical in light and dark mode.
+        systemOverlayStyle: kNavySystemBarStyle,
       ),
       cardTheme: CardThemeData(
         color: isLight ? WaecColors.cardLight : WaecColors.cardDark,
@@ -96,9 +129,7 @@ abstract final class WaecTheme {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(WaecRadii.lg),
           side: BorderSide(
-            color: isLight
-                ? const Color(0xFFE2E8F0)
-                : const Color(0xFF1E3A5F),
+            color: isLight ? const Color(0xFFE2E8F0) : const Color(0xFF1E3A5F),
           ),
         ),
       ),
@@ -110,10 +141,7 @@ abstract final class WaecTheme {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(WaecRadii.md),
           ),
-          textStyle: const TextStyle(
-            fontWeight: FontWeight.w700,
-            fontSize: 16,
-          ),
+          textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -122,13 +150,13 @@ abstract final class WaecTheme {
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(WaecRadii.md),
           borderSide: BorderSide(
-            color: isLight
-                ? const Color(0xFFE2E8F0)
-                : const Color(0xFF1E3A5F),
+            color: isLight ? const Color(0xFFE2E8F0) : const Color(0xFF1E3A5F),
           ),
         ),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
       ),
       snackBarTheme: const SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
@@ -138,16 +166,17 @@ abstract final class WaecTheme {
 
   /// Convenience: a [TextStyle] using JetBrains Mono for index numbers,
   /// reference codes and other monospaced identifiers (per the design system).
-  static TextStyle get mono => GoogleFonts.jetBrainsMono(
-        color: WaecColors.textPrimaryLight,
-      );
+  static TextStyle get mono =>
+      GoogleFonts.jetBrainsMono(color: WaecColors.textPrimaryLight);
 
   /// Letter-spaced monospace style for reference numbers shown on cards.
-  static TextStyle monoNum(double size, [Color color = WaecColors.textPrimaryLight]) =>
-      GoogleFonts.jetBrainsMono(
-        fontSize: size,
-        letterSpacing: 0.08,
-        fontWeight: FontWeight.w600,
-        color: color,
-      );
+  static TextStyle monoNum(
+    double size, [
+    Color color = WaecColors.textPrimaryLight,
+  ]) => GoogleFonts.jetBrainsMono(
+    fontSize: size,
+    letterSpacing: 0.08,
+    fontWeight: FontWeight.w600,
+    color: color,
+  );
 }

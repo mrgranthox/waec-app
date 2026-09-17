@@ -1,22 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is off -->
-    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+    <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is off.
+         Parent MUST derive from AppCompat — the local_auth biometric prompt is
+         hosted in this activity's window and crashes on non-AppCompat themes.
+         Must also repeat the navy system-bar configuration from values/styles.xml:
+         this file OVERRIDES that theme on Android 12+, so omitting the navy
+         entries here reintroduces a white status bar on modern devices. -->
+    <style name="LaunchTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowFullscreen">false</item>
-        <item name="android:windowDrawsSystemBarBackgrounds">false</item>
+        <!-- Draw the navy brand behind the system bars so the status bar extends
+             the splash colour (requirement: colour extends to status bar). -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@color/navy</item>
+        <item name="android:navigationBarColor">@color/navy</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
-        <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+        <!-- Android 12+ SplashScreen API: keep the launch surface navy so the
+             native splash and the in-app BrandedSplash read as one brand. -->
+        <item name="android:windowSplashScreenBackground">@color/navy</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/android12splash</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">#FFFFFF</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/navy</item>
     </style>
     <!-- Theme applied to the Android Window as soon as the process has started.
          This theme determines the color of the Android Window while your
          Flutter UI initializes, as well as behind your Flutter UI while its
          running.
-         
+
          This Theme is only used starting with V2 of Flutter's Android embedding. -->
-    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">@android:color/white</item>
+    <style name="NormalTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/navy</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@color/navy</item>
+        <item name="android:navigationBarColor">@color/navy</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>
