@@ -6,13 +6,21 @@
 use serde::{Deserialize, Serialize};
 use waec_common::{DomainError, ErrorCode};
 
-/// Static pricing table until the pricing config table lands (2.7).
-/// Values are pesewas (GHS × 100). Served by GetPricing.
-pub fn base_price_pesewas(exam: &str) -> i64 {
-    match exam {
-        "BECE" => 1500,      // GHS 15.00
-        "WASSCE_SC" => 2000, // GHS 20.00
-        "WASSCE_PRIVATE" => 2000,
+/// Static pricing table used when no Postgres pool is wired (unit tests, bare
+/// local dev) or when the database is unreachable — pricing must never take the
+/// whole payment service down (plan §2.2 degradation).
+///
+/// Values are pesewas (GHS × 100) and mirror the seeded `pricing_config` rows,
+/// including the two-part checker pricing from ADR-002:
+/// - `check_now == false` — a checker bought on its own, to keep or share.
+/// - `check_now == true`  — a checker spent immediately, retrieval included.
+///
+/// An unknown exam type resolves to 0, which the client renders as its own
+/// documented fallback rather than as "free".
+pub fn base_price_pesewas(exam: &str, check_now: bool) -> i64 {
+    match (exam, check_now) {
+        ("BECE" | "WASSCE_SC" | "WASSCE_PRIVATE", false) => 2600, // GHS 26.00
+        ("BECE" | "WASSCE_SC" | "WASSCE_PRIVATE", true) => 3600,  // GHS 36.00
         _ => 0,
     }
 }
@@ -103,5 +111,39 @@ impl PaystackTransport for PaystackHttp {
         parsed
             .data
             .ok_or_else(|| DomainError::new(ErrorCode::Internal, "empty paystack data"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base_price_pesewas;
+
+    #[test]
+    fn static_table_matches_the_seeded_config() {
+        // The fallback must mirror `pricing_config` exactly, or a database
+        // outage would silently change what a candidate is charged.
+        for exam in ["BECE", "WASSCE_SC", "WASSCE_PRIVATE"] {
+            assert_eq!(base_price_pesewas(exam, false), 2600, "{exam} checker only");
+            assert_eq!(
+                base_price_pesewas(exam, true),
+                3600,
+                "{exam} checker + result"
+            );
+        }
+    }
+
+    #[test]
+    fn check_now_is_dearer_than_checker_only() {
+        // ADR-002: spending the checker in the same pass also buys the
+        // retrieval, so the combined rate must be strictly higher.
+        assert!(base_price_pesewas("BECE", true) > base_price_pesewas("BECE", false));
+    }
+
+    #[test]
+    fn unknown_exam_type_prices_at_zero() {
+        // Nothing is invented for an unmapped exam type — the client renders its
+        // own documented fallback instead of treating 0 as a real price.
+        assert_eq!(base_price_pesewas("NOPE", false), 0);
+        assert_eq!(base_price_pesewas("NOPE", true), 0);
     }
 }

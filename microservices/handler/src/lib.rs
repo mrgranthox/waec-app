@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 pub use portal::{HttpPortal, PortalClient, PortalResponse};
 pub use proxy::{ProxyExit, ProxyRotator, TLS_PROFILES};
 
-use waec_common::pb::waec::common::v1::ResultPayload;
 use waec_common::ExamType;
+use waec_common::pb::waec::common::v1::ResultPayload;
 use waec_data::events::EventPublisher;
 use waec_data::grace::{FetchFailureKind, GraceIssuer, MemoryGraceLease};
 
@@ -269,12 +269,7 @@ pub fn run() {
         // §4.1: durable journal so a journey row exists BEFORE portal egress.
         // Production uses Postgres; the journal is memory-only for local dev.
         let journal = build_journal().await;
-        let state = HandlerState::with_pipeline(
-            Arc::new(portal),
-            events,
-            Some(grace),
-            journal,
-        );
+        let state = HandlerState::with_pipeline(Arc::new(portal), events, Some(grace), journal);
         svc::serve(Arc::new(state), 50054)
             .await
             .expect("handler server");

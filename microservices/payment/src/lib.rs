@@ -5,14 +5,15 @@
 //! enforcement — duplicate keys return the original outcome, never
 //! double-charge (hard rule 3 / §4.9).
 
+pub mod mock_mint;
 pub mod paystack;
 pub mod svc;
 
 use std::sync::Arc;
 
-pub use paystack::{base_price_pesewas, ChargeMetadata, ChargeRequest, PaystackTransport};
-use waec_common::idempotency::{IdempotencyStore, InMemoryIdempotencyStore};
+pub use paystack::{ChargeMetadata, ChargeRequest, PaystackTransport, base_price_pesewas};
 use waec_common::DomainError;
+use waec_common::idempotency::{IdempotencyStore, InMemoryIdempotencyStore};
 
 /// Shared state.
 pub struct PaymentState {
@@ -73,6 +74,7 @@ pub fn run() {
         let secret = std::env::var("PAYSTACK_SECRET").unwrap_or_else(|_| "sk_test_dev".into());
         let webhook =
             std::env::var("PAYSTACK_WEBHOOK_SECRET").unwrap_or_else(|_| "whsec_dev".into());
+        let mock_minting = std::env::var("MOCK_MINTING").as_deref() != Ok("0");
         let state = Arc::new(PaymentState::new(
             Arc::new(paystack::PaystackHttp {
                 secret,
@@ -82,7 +84,45 @@ pub fn run() {
             Arc::new(InMemoryIdempotencyStore::default()),
             webhook,
         ));
-        svc::serve(state, 50052).await.expect("payment server");
+
+        // Requirement 4: dynamic pricing from the database. Neon takes
+        // precedence over the compose-internal Postgres (see .env.example).
+        // A DB outage degrades to the static table — pricing must never take
+        // the payment path down.
+        let database_url = std::env::var("NEON_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .ok();
+        let pricing = match database_url {
+            Some(url) => match waec_data::connect_pool(&url).await {
+                Ok(pool) => {
+                    if let Err(e) = waec_data::run_migrations(&pool).await {
+                        tracing::warn!(error = %e, "migrations failed — serving static pricing");
+                        None
+                    } else {
+                        tracing::info!("dynamic pricing enabled (Postgres/Neon)");
+                        Some(Arc::new(waec_data::pricing::PgPricingStore::new(pool)))
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "database unreachable — serving static pricing");
+                    None
+                }
+            },
+            None => {
+                tracing::info!("no DATABASE_URL — serving static pricing");
+                None
+            }
+        };
+
+        match pricing {
+            Some(store) => svc::serve_with_pricing(state, store, 50052).await,
+            None => svc::serve(state, 50052).await,
+        }
+        .expect("payment server");
+
+        if mock_minting {
+            tracing::info!("mock checker minting enabled (local test phase)");
+        }
     });
 }
 

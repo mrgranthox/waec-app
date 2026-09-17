@@ -19,6 +19,7 @@ pub enum ErrorCode {
     VendorCircuitOpen,
     WaecPortalUnavailable,
     WaecDomSchemaDrift,
+    NotFound,
     CandidateNotFound,
     GracePeriodExpired,
     AuthInvalidCredentials,
@@ -45,6 +46,7 @@ impl ErrorCode {
             ErrorCode::VendorCircuitOpen => "VENDOR_CIRCUIT_OPEN",
             ErrorCode::WaecPortalUnavailable => "WAEC_PORTAL_UNAVAILABLE",
             ErrorCode::WaecDomSchemaDrift => "WAEC_DOM_SCHEMA_DRIFT",
+            ErrorCode::NotFound => "NOT_FOUND",
             ErrorCode::CandidateNotFound => "CANDIDATE_NOT_FOUND",
             ErrorCode::GracePeriodExpired => "GRACE_PERIOD_EXPIRED",
             ErrorCode::AuthInvalidCredentials => "AUTH_INVALID_CREDENTIALS",
@@ -67,6 +69,7 @@ impl ErrorCode {
             ErrorCode::PaymentDeclined
             | ErrorCode::PaymentDuplicateIdempotencyKey
             | ErrorCode::VendorsOutOfStock
+            | ErrorCode::NotFound
             | ErrorCode::CandidateNotFound
             | ErrorCode::GracePeriodExpired => Code::FailedPrecondition,
             ErrorCode::WebhookSignatureInvalid

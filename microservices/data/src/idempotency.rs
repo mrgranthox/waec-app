@@ -94,16 +94,18 @@ mod tests {
             .await
             .unwrap();
         // Second put is rejected — original preserved.
-        assert!(store
-            .put(
-                &key,
-                IdempotentOutcome {
-                    response: r#"{"amount":999}"#.into(),
-                    recorded_at: 2
-                },
-            )
-            .await
-            .is_err());
+        assert!(
+            store
+                .put(
+                    &key,
+                    IdempotentOutcome {
+                        response: r#"{"amount":999}"#.into(),
+                        recorded_at: 2
+                    },
+                )
+                .await
+                .is_err()
+        );
         let got = store.get(&key).await.unwrap();
         assert!(got.response.contains("2000"));
     }

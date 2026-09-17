@@ -55,19 +55,19 @@ CREATE TABLE IF NOT EXISTS paystack_initiations (
 /// All DDL statements in order. Run each independently so a partially-applied
 /// migration leaves the schema consistent (each statement is idempotent).
 pub fn all_ddl() -> Vec<&'static str> {
-    vec![CHECKER_VAULT_DDL, RESULT_SNAPSHOTS_DDL, PAYSTACK_INITIATIONS_DDL]
+    vec![
+        CHECKER_VAULT_DDL,
+        RESULT_SNAPSHOTS_DDL,
+        PAYSTACK_INITIATIONS_DDL,
+    ]
 }
 
 /// Run all checker-schema migrations against a pool.
 pub async fn run_all(pool: &sqlx::PgPool) -> Result<(), waec_common::DomainError> {
     for ddl in all_ddl() {
-        sqlx::query(ddl)
-            .execute(pool)
-            .await
-            .map_err(|e| waec_common::DomainError::new(
-                waec_common::ErrorCode::Internal,
-                e.to_string(),
-            ))?;
+        sqlx::query(ddl).execute(pool).await.map_err(|e| {
+            waec_common::DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
+        })?;
     }
     Ok(())
 }
@@ -84,7 +84,8 @@ mod tests {
             for f in &forbidden {
                 assert!(
                     !ddl.to_lowercase().contains(&f.to_lowercase()),
-                    "DDL contains forbidden literal '{}'", f
+                    "DDL contains forbidden literal '{}'",
+                    f
                 );
             }
         }
@@ -118,8 +119,15 @@ mod tests {
     #[test]
     fn checker_vault_has_required_columns() {
         let ddl = CHECKER_VAULT_DDL;
-        for col in ["index_number", "exam_type", "exam_year", "encrypted_blob",
-                     "status", "acquired_at_unix", "transaction_id"] {
+        for col in [
+            "index_number",
+            "exam_type",
+            "exam_year",
+            "encrypted_blob",
+            "status",
+            "acquired_at_unix",
+            "transaction_id",
+        ] {
             assert!(ddl.contains(col), "checker_vault missing column: {}", col);
         }
     }

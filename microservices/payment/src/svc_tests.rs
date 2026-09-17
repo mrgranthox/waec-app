@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tonic::Request;
 use waec_common::idempotency::{IdempotencyStore, InMemoryIdempotencyStore};
 
-use crate::svc::{verify_webhook, verify_webhook_at, webhook_event_time, PaymentServiceImpl};
+use crate::svc::{PaymentServiceImpl, verify_webhook, verify_webhook_at, webhook_event_time};
 use crate::{MockTransport, PaymentState};
 use waec_common::pb::waec::common::v1::{ExamType, PaymentChannel};
 use waec_common::pb::waec::payment::v1::payment_service_server::PaymentService;
@@ -33,6 +33,9 @@ fn charge_req(key: &str) -> InitChargeRequest {
         exam_year: "2025".into(),
         channel: PaymentChannel::MtnMomo as i32,
         phone: "0244000000".into(),
+        // Default: a checker bought on its own (ADR-002). Tests that care about
+        // the combined rate flip this explicitly.
+        check_now: false,
     }
 }
 
@@ -48,7 +51,7 @@ async fn charge_initializes_pending() {
         resp.status,
         waec_common::pb::waec::payment::v1::PaymentStatus::Pending as i32
     );
-    assert_eq!(resp.amount_pesewas, 2000); // WASSCE_SC = GHS 20
+    assert_eq!(resp.amount_pesewas, 2600); // WASSCE_SC checker only = GHS 26.00
     assert!(resp.checkout_url.contains("key-1"));
 }
 
@@ -94,23 +97,66 @@ async fn declined_charge_is_error() {
 #[tokio::test]
 async fn dynamic_pricing_per_exam() {
     let s = svc(false);
-    let bece = s
-        .get_pricing(Request::new(GetPricingRequest {
-            exam_type: ExamType::Bece as i32,
-        }))
-        .await
-        .unwrap()
-        .into_inner();
-    let wassce = s
+    let price_of = |exam: ExamType, check_now: bool| {
+        let s = &s;
+        async move {
+            s.get_pricing(Request::new(GetPricingRequest {
+                exam_type: exam as i32,
+                check_now,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+        }
+    };
+
+    let bece = price_of(ExamType::Bece, false).await;
+    let wassce = price_of(ExamType::WassceSchool, false).await;
+    assert_eq!(bece.amount_pesewas, 2600); // GHS 26.00 checker only
+    assert_eq!(wassce.amount_pesewas, 2600);
+    assert_eq!(bece.currency, "GHS");
+
+    // ADR-002: spending the checker in the same pass buys the retrieval too, so
+    // the quote must move with the flag.
+    let bece_now = price_of(ExamType::Bece, true).await;
+    let wassce_now = price_of(ExamType::WassceSchool, true).await;
+    assert_eq!(bece_now.amount_pesewas, 3600); // GHS 36.00 checker + result
+    assert_eq!(wassce_now.amount_pesewas, 3600);
+}
+
+#[tokio::test]
+async fn check_now_pricing_flows_into_the_charge() {
+    // The number shown (GetPricing) and the number charged (InitCharge) must be
+    // the same number for the same flag — that is the whole point of ADR-002.
+    let s = svc(false);
+
+    let quoted = s
         .get_pricing(Request::new(GetPricingRequest {
             exam_type: ExamType::WassceSchool as i32,
+            check_now: true,
         }))
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(bece.amount_pesewas, 1500);
-    assert_eq!(wassce.amount_pesewas, 2000);
-    assert_eq!(bece.currency, "GHS");
+
+    let mut req = charge_req("key-check-now");
+    req.check_now = true;
+    let charged = s.init_charge(Request::new(req)).await.unwrap().into_inner();
+
+    assert_eq!(charged.amount_pesewas, quoted.amount_pesewas);
+    assert_eq!(charged.amount_pesewas, 3600);
+
+    // A checker bought on its own still carries the cheaper rate, so the flag
+    // is genuinely what moves the price.
+    let mut solo = charge_req("key-solo");
+    solo.check_now = false;
+    let solo_charged = s
+        .init_charge(Request::new(solo))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(solo_charged.amount_pesewas, 2600);
+    assert!(solo_charged.amount_pesewas < charged.amount_pesewas);
 }
 
 #[test]

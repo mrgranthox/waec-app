@@ -12,8 +12,13 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2026"
-rust-version = "1.75"
+# Edition 2024: the newest edition supported by the installed toolchain
+# (cargo 1.98 supports 2015/2018/2021/2024; the previously declared 2026
+# made every cargo command fail manifest parsing, so the Rust suite could
+# not run at all).
+edition = "2024"
+# Edition 2024 requires rustc >= 1.85 (installed toolchain: 1.98).
+rust-version = "1.85"
 license = "Proprietary"
 authors = ["Edward Nyame"]
 

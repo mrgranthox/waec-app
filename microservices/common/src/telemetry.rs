@@ -3,9 +3,9 @@
 //! Services initialise this once at startup; spans propagate correlation
 //! IDs across gRPC boundaries via the standard `tracing` context.
 
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
 
 /// Initialise global tracing with JSON output and env-filtered levels.
 ///

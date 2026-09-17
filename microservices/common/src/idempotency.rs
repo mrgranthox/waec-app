@@ -59,26 +59,30 @@ mod tests {
     #[tokio::test]
     async fn first_put_wins_duplicate_put_fails() {
         let store = InMemoryIdempotencyStore::default();
-        assert!(store
-            .put(
-                "k1",
-                IdempotentOutcome {
-                    response: "A".into(),
-                    recorded_at: 1
-                }
-            )
-            .await
-            .is_ok());
-        assert!(store
-            .put(
-                "k1",
-                IdempotentOutcome {
-                    response: "B".into(),
-                    recorded_at: 2
-                }
-            )
-            .await
-            .is_err());
+        assert!(
+            store
+                .put(
+                    "k1",
+                    IdempotentOutcome {
+                        response: "A".into(),
+                        recorded_at: 1
+                    }
+                )
+                .await
+                .is_ok()
+        );
+        assert!(
+            store
+                .put(
+                    "k1",
+                    IdempotentOutcome {
+                        response: "B".into(),
+                        recorded_at: 2
+                    }
+                )
+                .await
+                .is_err()
+        );
         assert_eq!(store.get("k1").await.unwrap().response, "A");
     }
 

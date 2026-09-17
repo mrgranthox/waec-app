@@ -16,8 +16,8 @@ pub mod txlog;
 pub mod users;
 
 use async_trait::async_trait;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 /// Build a Postgres pool from a `DATABASE_URL`-style connection string.
 pub async fn connect_pool(url: &str) -> Result<PgPool, sqlx::Error> {
@@ -26,6 +26,12 @@ pub async fn connect_pool(url: &str) -> Result<PgPool, sqlx::Error> {
         .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(url)
         .await
+}
+
+/// Run the workspace SQL migrations (microservices/migrations). Called at
+/// service boot so Neon and the compose Postgres converge on the same schema.
+pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate!("../migrations").run(pool).await
 }
 
 /// Audit store contract (Admin §2.5). The in-memory impl lives in the

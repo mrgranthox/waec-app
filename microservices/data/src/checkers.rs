@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
 
-use sqlx::{PgPool, FromRow};
+use sqlx::FromRow;
 
 use waec_common::DomainError;
 
@@ -72,6 +72,11 @@ pub struct PaystackInitiationRow {
 #[async_trait]
 pub trait CheckerStore: Send + Sync {
     /// Persist a freshly acquired checker (encrypted blob provided by caller).
+    ///
+    /// The argument count is deliberate: every value is a distinct column of
+    /// `checker_vault` and none of them is defaulted, so grouping them into a
+    /// struct would only move the same list one hop away from the SQL.
+    #[allow(clippy::too_many_arguments)]
     async fn store_checker(
         &self,
         id: &str,
@@ -92,30 +97,16 @@ pub trait CheckerStore: Send + Sync {
     ) -> Result<Option<CheckerRow>, DomainError>;
 
     /// Mark a checker as spent after a successful result redemption.
-    async fn mark_spent(
-        &self,
-        id: &str,
-        index_number: &str,
-    ) -> Result<(), DomainError>;
+    async fn mark_spent(&self, id: &str, index_number: &str) -> Result<(), DomainError>;
 
     /// List all non-spent checkers for an index.
-    async fn list_available(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<CheckerRow>, DomainError>;
+    async fn list_available(&self, index_number: &str) -> Result<Vec<CheckerRow>, DomainError>;
 
     /// List all checkers (spent + available) for an index.
-    async fn list_all(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<CheckerRow>, DomainError>;
+    async fn list_all(&self, index_number: &str) -> Result<Vec<CheckerRow>, DomainError>;
 
     /// Delete a checker by id + index.
-    async fn delete_checker(
-        &self,
-        id: &str,
-        index_number: &str,
-    ) -> Result<(), DomainError>;
+    async fn delete_checker(&self, id: &str, index_number: &str) -> Result<(), DomainError>;
 }
 
 /// Result snapshot persistence.
@@ -132,28 +123,24 @@ pub trait SnapshotStore: Send + Sync {
     ) -> Result<(), DomainError>;
 
     /// Load a snapshot by id.
-    async fn load_snapshot(
-        &self,
-        snapshot_id: &str,
-    ) -> Result<Option<SnapshotRow>, DomainError>;
+    async fn load_snapshot(&self, snapshot_id: &str) -> Result<Option<SnapshotRow>, DomainError>;
 
     /// List snapshots for an index, newest first.
-    async fn list_snapshots(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<SnapshotRow>, DomainError>;
+    async fn list_snapshots(&self, index_number: &str) -> Result<Vec<SnapshotRow>, DomainError>;
 
     /// Delete a snapshot by id.
-    async fn delete_snapshot(
-        &self,
-        snapshot_id: &str,
-    ) -> Result<(), DomainError>;
+    async fn delete_snapshot(&self, snapshot_id: &str) -> Result<(), DomainError>;
 }
 
 /// Paystack initiation tracking.
 #[async_trait]
 pub trait InitiationStore: Send + Sync {
     /// Record a Paystack checkout that the client started.
+    ///
+    /// Same reasoning as [CheckerStore::store_checker]: each argument is a
+    /// required `paystack_initiations` column, and [Self::record_initiation] is
+    /// called once, at the point where all of them are already in scope.
+    #[allow(clippy::too_many_arguments)]
     async fn record_initiation(
         &self,
         id: &str,
@@ -167,7 +154,7 @@ pub trait InitiationStore: Send + Sync {
     ) -> Result<(), DomainError>;
 
     /// Look up an initiation by paystack reference (used by webhook handler).
-    async fn findByPaystackRef(
+    async fn find_by_paystack_ref(
         &self,
         paystack_ref: &str,
     ) -> Result<Option<PaystackInitiationRow>, DomainError>;
@@ -206,9 +193,10 @@ impl CheckerStore for InMemoryCheckerStore {
         transaction_id: &str,
         expires_at_unix: Option<i64>,
     ) -> Result<(), DomainError> {
-        let mut guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let mut guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         guard.push(CheckerRow {
             id: id.to_string(),
             index_number: index_number.to_string(),
@@ -228,24 +216,25 @@ impl CheckerStore for InMemoryCheckerStore {
         id: &str,
         index_number: &str,
     ) -> Result<Option<CheckerRow>, DomainError> {
-        let guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         Ok(guard
             .iter()
             .find(|r| r.id == id && r.index_number == index_number)
             .cloned())
     }
 
-    async fn mark_spent(
-        &self,
-        id: &str,
-        index_number: &str,
-    ) -> Result<(), DomainError> {
-        let mut guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
-        if let Some(row) = guard.iter_mut().find(|r| r.id == id && r.index_number == index_number) {
+    async fn mark_spent(&self, id: &str, index_number: &str) -> Result<(), DomainError> {
+        let mut guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
+        if let Some(row) = guard
+            .iter_mut()
+            .find(|r| r.id == id && r.index_number == index_number)
+        {
             row.status = "spent".to_string();
             Ok(())
         } else {
@@ -256,13 +245,11 @@ impl CheckerStore for InMemoryCheckerStore {
         }
     }
 
-    async fn list_available(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<CheckerRow>, DomainError> {
-        let guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+    async fn list_available(&self, index_number: &str) -> Result<Vec<CheckerRow>, DomainError> {
+        let guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         Ok(guard
             .iter()
             .filter(|r| r.index_number == index_number && r.status != "spent")
@@ -270,13 +257,11 @@ impl CheckerStore for InMemoryCheckerStore {
             .collect())
     }
 
-    async fn list_all(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<CheckerRow>, DomainError> {
-        let guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+    async fn list_all(&self, index_number: &str) -> Result<Vec<CheckerRow>, DomainError> {
+        let guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         Ok(guard
             .iter()
             .filter(|r| r.index_number == index_number)
@@ -284,14 +269,11 @@ impl CheckerStore for InMemoryCheckerStore {
             .collect())
     }
 
-    async fn delete_checker(
-        &self,
-        id: &str,
-        index_number: &str,
-    ) -> Result<(), DomainError> {
-        let mut guard = self.checkers.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+    async fn delete_checker(&self, id: &str, index_number: &str) -> Result<(), DomainError> {
+        let mut guard = self
+            .checkers
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         guard.retain(|r| !(r.id == id && r.index_number == index_number));
         Ok(())
     }
@@ -307,9 +289,10 @@ impl SnapshotStore for InMemoryCheckerStore {
         fetched_at_unix: i64,
         expires_at_unix: i64,
     ) -> Result<(), DomainError> {
-        let mut guard = self.snapshots.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let mut guard = self
+            .snapshots
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         guard.push(SnapshotRow {
             id: snapshot_id.to_string(),
             index_number: index_number.to_string(),
@@ -321,26 +304,19 @@ impl SnapshotStore for InMemoryCheckerStore {
         Ok(())
     }
 
-    async fn load_snapshot(
-        &self,
-        snapshot_id: &str,
-    ) -> Result<Option<SnapshotRow>, DomainError> {
-        let guard = self.snapshots.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
-        Ok(guard
-            .iter()
-            .find(|r| r.id == snapshot_id)
-            .cloned())
+    async fn load_snapshot(&self, snapshot_id: &str) -> Result<Option<SnapshotRow>, DomainError> {
+        let guard = self
+            .snapshots
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
+        Ok(guard.iter().find(|r| r.id == snapshot_id).cloned())
     }
 
-    async fn list_snapshots(
-        &self,
-        index_number: &str,
-    ) -> Result<Vec<SnapshotRow>, DomainError> {
-        let guard = self.snapshots.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+    async fn list_snapshots(&self, index_number: &str) -> Result<Vec<SnapshotRow>, DomainError> {
+        let guard = self
+            .snapshots
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         Ok(guard
             .iter()
             .filter(|r| r.index_number == index_number)
@@ -348,13 +324,11 @@ impl SnapshotStore for InMemoryCheckerStore {
             .collect())
     }
 
-    async fn delete_snapshot(
-        &self,
-        snapshot_id: &str,
-    ) -> Result<(), DomainError> {
-        let mut guard = self.snapshots.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+    async fn delete_snapshot(&self, snapshot_id: &str) -> Result<(), DomainError> {
+        let mut guard = self
+            .snapshots
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         guard.retain(|r| r.id != snapshot_id);
         Ok(())
     }
@@ -373,9 +347,10 @@ impl InitiationStore for InMemoryCheckerStore {
         amount_pesewas: i64,
         currency: &str,
     ) -> Result<(), DomainError> {
-        let mut guard = self.initiations.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let mut guard = self
+            .initiations
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         guard.push(PaystackInitiationRow {
             id: id.to_string(),
             index_number: index_number.to_string(),
@@ -391,13 +366,14 @@ impl InitiationStore for InMemoryCheckerStore {
         Ok(())
     }
 
-    async fn findByPaystackRef(
+    async fn find_by_paystack_ref(
         &self,
         paystack_ref: &str,
     ) -> Result<Option<PaystackInitiationRow>, DomainError> {
-        let guard = self.initiations.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let guard = self
+            .initiations
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         Ok(guard
             .iter()
             .find(|r| r.paystack_ref == paystack_ref)
@@ -405,9 +381,10 @@ impl InitiationStore for InMemoryCheckerStore {
     }
 
     async fn mark_paid(&self, id: &str) -> Result<(), DomainError> {
-        let mut guard = self.initiations.lock().map_err(|e| {
-            DomainError::new(waec_common::ErrorCode::Internal, e.to_string())
-        })?;
+        let mut guard = self
+            .initiations
+            .lock()
+            .map_err(|e| DomainError::new(waec_common::ErrorCode::Internal, e.to_string()))?;
         if let Some(row) = guard.iter_mut().find(|r| r.id == id) {
             row.status = "paid".to_string();
             Ok(())

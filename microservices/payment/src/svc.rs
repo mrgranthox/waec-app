@@ -21,16 +21,58 @@ use waec_common::pb::waec::payment::v1::{
 };
 use waec_common::{DomainError, ErrorCode};
 
-use crate::paystack::{base_price_pesewas, ChargeMetadata, ChargeRequest, MobileMoney};
 use crate::PaymentState;
+use crate::paystack::{ChargeMetadata, ChargeRequest, MobileMoney, base_price_pesewas};
 
+/// PaymentService gRPC implementation.
+///
+/// Pricing resolution (requirement 4): when a Postgres pool is wired (prod /
+/// Neon), every price is read live from `pricing_config` so a fee change
+/// never needs an app release. Without a pool (unit tests, bare local dev)
+/// it degrades to the static table in `paystack::base_price_pesewas` — the
+/// same values the mock gateway serves.
 pub struct PaymentServiceImpl {
     pub(crate) state: Arc<PaymentState>,
+    pub(crate) pricing: Option<Arc<waec_data::pricing::PgPricingStore>>,
 }
 
 impl PaymentServiceImpl {
     pub fn new(state: Arc<PaymentState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            pricing: None,
+        }
+    }
+
+    /// Constructor used when a database is available (Neon in prod test
+    /// phase, compose Postgres in local dev).
+    pub fn with_pricing(
+        state: Arc<PaymentState>,
+        pricing: Arc<waec_data::pricing::PgPricingStore>,
+    ) -> Self {
+        Self {
+            state,
+            pricing: Some(pricing),
+        }
+    }
+
+    /// Resolve the current price for a purchase: DB first, static table as the
+    /// documented fallback.
+    ///
+    /// [check_now] is forwarded to the store so the resolved amount is the one
+    /// that actually applies to the purchase being made (ADR-002): checker-only
+    /// or checker-and-retrieve. Pricing is resolved here rather than on the
+    /// client precisely so the quoted and charged amounts cannot drift.
+    async fn resolve_price(
+        &self,
+        exam: waec_common::ExamType,
+        check_now: bool,
+    ) -> Result<(i64, String), DomainError> {
+        if let Some(store) = &self.pricing {
+            let price = store.price_for(exam.as_str(), check_now).await?;
+            return Ok((price.amount_pesewas, price.currency));
+        }
+        Ok((base_price_pesewas(exam.as_str(), check_now), "GHS".into()))
     }
 
     fn pb_to_exam(t: PbExamType) -> Result<waec_common::ExamType, DomainError> {
@@ -101,8 +143,12 @@ impl PaymentService for PaymentServiceImpl {
             }));
         }
 
-        // ── Dynamic GHS price (table until pricing config lands in 2.7) ─
-        let amount = base_price_pesewas(exam.as_str());
+        // ── Dynamic GHS price (requirement 4: DB-backed when wired, static
+        // table otherwise) ────────────────────────────────────────────────
+        // `check_now` is part of the price lookup, not a client-side surcharge
+        // (ADR-002): a checker spent in this pass costs the combined rate, and
+        // the amount returned below is what Paystack is asked to charge.
+        let (amount, currency) = self.resolve_price(exam, req.check_now).await?;
         let (channel_hint, momo_provider) = Self::channel_parts(
             waec_common::pb::waec::common::v1::PaymentChannel::try_from(req.channel)
                 .unwrap_or_default(),
@@ -111,7 +157,7 @@ impl PaymentService for PaymentServiceImpl {
         let charge = ChargeRequest {
             email: "candidate@waecplatform.gh", // Paystack requires an email
             amount,
-            currency: "GHS",
+            currency: &currency,
             reference: &req.idempotency_key,
             channel_hint,
             mobile_money: momo_provider.map(|provider| MobileMoney {
@@ -175,10 +221,17 @@ impl PaymentService for PaymentServiceImpl {
             Self::pb_to_exam(PbExamType::try_from(req.exam_type).map_err(|_| {
                 DomainError::new(ErrorCode::UnsupportedExamType, "unknown exam_type")
             })?)?;
+        // Dynamic GHS pricing (plan §4.3): read the fee live from the Neon
+        // `pricing_config` store (falling back to the static table when the
+        // store is unavailable) so fee changes never require an app release.
+        // The request's `check_now` selects which of the two configured rates
+        // applies, so this is exactly the amount InitCharge will charge for the
+        // same flag (ADR-002).
+        let (amount, currency) = self.resolve_price(exam, req.check_now).await?;
         Ok(Response::new(GetPricingResponse {
-            amount_pesewas: base_price_pesewas(exam.as_str()),
-            currency: "GHS".into(),
-            effective_from_unix: 0,
+            amount_pesewas: amount,
+            currency,
+            effective_from_unix: chrono::Utc::now().timestamp(),
         }))
     }
 }
@@ -254,11 +307,40 @@ pub async fn serve(state: Arc<PaymentState>, port: u16) -> Result<(), Box<dyn st
         .set_serving::<waec_common::pb::waec::payment::v1::payment_service_server::PaymentServiceServer<PaymentServiceImpl>>()
         .await;
 
+    let svc_impl = PaymentServiceImpl::new(state);
     let svc = waec_common::pb::waec::payment::v1::payment_service_server::PaymentServiceServer::new(
-        PaymentServiceImpl::new(state),
+        svc_impl,
     );
 
     tracing::info!(%port, "payment service listening");
+    tonic::transport::Server::builder()
+        .add_service(health_service)
+        .add_service(svc)
+        .serve(addr)
+        .await?;
+    Ok(())
+}
+
+/// Serve with a live pricing store (requirement 4): prices read from the
+/// Postgres `pricing_config` table, falling back to the static table on a
+/// missing row or a DB error.
+pub async fn serve_with_pricing(
+    state: Arc<PaymentState>,
+    pricing: Arc<waec_data::pricing::PgPricingStore>,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = format!("0.0.0.0:{port}").parse()?;
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<waec_common::pb::waec::payment::v1::payment_service_server::PaymentServiceServer<PaymentServiceImpl>>()
+        .await;
+
+    let svc_impl = PaymentServiceImpl::with_pricing(state, pricing);
+    let svc = waec_common::pb::waec::payment::v1::payment_service_server::PaymentServiceServer::new(
+        svc_impl,
+    );
+
+    tracing::info!(%port, "payment service listening (dynamic pricing)");
     tonic::transport::Server::builder()
         .add_service(health_service)
         .add_service(svc)

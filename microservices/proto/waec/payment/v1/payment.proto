@@ -21,6 +21,11 @@ message InitChargeRequest {
   waec.common.v1.PaymentChannel channel = 5;
   // Paystack customer phone for MoMo channels.
   string phone = 6;
+  // True when the checker is spent in the same pass (buy + retrieve now).
+  // Selects the `check_now_pesewas` rate instead of the checker-only rate, so
+  // the amount charged always matches the amount quoted by GetPricing
+  // (ADR-002). Additive and default-false: an older client is unaffected.
+  bool check_now = 7;
 }
 
 message InitChargeResponse {
@@ -42,9 +47,17 @@ enum PaymentStatus {
 
 message GetPricingRequest {
   waec.common.v1.ExamType exam_type = 1;
+  // What the caller is about to buy. False = a checker on its own (keep it for
+  // later / share it). True = a checker spent immediately, which also pays for
+  // the retrieval. Additive and default-false (ADR-002).
+  bool check_now = 2;
 }
 
 message GetPricingResponse {
+  // The authoritative amount for the request as asked — checker-only or
+  // checker-and-retrieve. The client renders this verbatim and never does the
+  // arithmetic itself, so the quoted number and the charged number cannot
+  // drift apart (ADR-002).
   int64 amount_pesewas = 1;
   string currency = 2; // always "GHS"
   int64 effective_from_unix = 3;

@@ -52,7 +52,7 @@ impl AuditStore for InMemoryAuditStore {
         let rows = self.rows.read().unwrap();
         let out = rows
             .iter()
-            .filter(|r| index_number.map_or(true, |i| r.index_number == i))
+            .filter(|r| index_number.is_none_or(|i| r.index_number == i))
             .filter(|r| r.occurred_unix >= from_unix && r.occurred_unix <= to_unix)
             .rev()
             .take(if limit <= 0 { 50 } else { limit as usize })

@@ -160,7 +160,7 @@ impl DistributorService for DistributorServiceImpl {
             _ => {
                 return Err(
                     DomainError::new(ErrorCode::UnsupportedExamType, "exam_type required").into(),
-                )
+                );
             }
         };
 

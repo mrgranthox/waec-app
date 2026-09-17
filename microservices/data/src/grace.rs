@@ -514,11 +514,12 @@ mod tests {
     #[tokio::test]
     async fn unknown_or_replayed_token_cannot_refetch() {
         let (g, _lease, _bus) = issuer();
-        assert!(g
-            .authorize_refetch("not-a-real-token")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            g.authorize_refetch("not-a-real-token")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     // ── §4.3: durable grace-log + index pointer survives reinstall ──────
@@ -598,11 +599,12 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(log
-            .outstanding_for_index("1002330440")
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            log.outstanding_for_index("1002330440")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

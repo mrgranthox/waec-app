@@ -146,7 +146,7 @@ mod tests {
     use super::*;
     use crate::audit::{AuditEntry as DomainAuditEntry, InMemoryAuditStore};
     use tonic::Request;
-    use waec_common::jwt::{access_claims_with_role, KeyStore};
+    use waec_common::jwt::{KeyStore, access_claims_with_role};
     use waec_common::pb::waec::admin::v1::admin_service_server::AdminService as AdminServiceTrait;
     use waec_common::pb::waec::admin::v1::{HealthRequest, QueryAuditLogRequest};
 

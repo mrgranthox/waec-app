@@ -228,7 +228,7 @@ impl TxJournal for PgTxJournal {
                 return Err(DomainError::new(
                     ErrorCode::Internal,
                     format!("journal: unknown status {other}"),
-                ))
+                ));
             }
         }))
     }

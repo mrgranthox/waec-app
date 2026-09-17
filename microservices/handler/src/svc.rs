@@ -10,11 +10,11 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use waec_common::pb::waec::common::v1::ResultPayload;
-use waec_common::pb::waec::handler::v1::handler_service_server::HandlerService;
 use waec_common::pb::waec::handler::v1::FetchResultRequest;
+use waec_common::pb::waec::handler::v1::handler_service_server::HandlerService;
 use waec_common::{DomainError, ErrorCode};
 
-use crate::{fetch_and_parse, HandlerState};
+use crate::{HandlerState, fetch_and_parse};
 
 pub struct HandlerServiceImpl {
     state: Arc<HandlerState>,

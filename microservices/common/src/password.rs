@@ -2,9 +2,9 @@
 //!
 //! Parameters follow OWASP guidance: m=19456 KiB (19 MiB), t=2, p=1.
 
+use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
 
 /// Errors from password hashing/verification.
 #[derive(Debug, thiserror::Error)]

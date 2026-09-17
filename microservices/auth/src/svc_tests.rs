@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tonic::Request;
 
 use crate::svc::AuthServiceImpl;
-use crate::{AuthState, InMemoryUserStore, UserStore, MAX_FAILED_ATTEMPTS};
+use crate::{AuthState, InMemoryUserStore, MAX_FAILED_ATTEMPTS, UserStore};
 use waec_common::jwt::KeyStore;
 // Trait import brings the gRPC methods (register/login/…) into scope.
 use waec_common::pb::waec::auth::v1::auth_service_server::AuthService;
@@ -184,12 +184,13 @@ async fn refresh_with_access_token_rejected() {
         .into_inner();
 
     // An ACCESS token must NOT work as a refresh token.
-    assert!(s
-        .refresh(req(RefreshRequest {
+    assert!(
+        s.refresh(req(RefreshRequest {
             refresh_token: registered.access_token,
         }))
         .await
-        .is_err());
+        .is_err()
+    );
 }
 
 #[tokio::test]

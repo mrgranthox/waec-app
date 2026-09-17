@@ -4,7 +4,7 @@
 //! are longer-lived and rotate on use.
 
 use jsonwebtoken::{
-    decode, decode_header, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
